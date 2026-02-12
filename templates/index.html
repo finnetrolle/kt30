@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Анализ технических заданий - Загрузка файла</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>📋 Анализатор технических заданий</h1>
+            <p class="subtitle">Загрузите документ Word для автоматического создания WBS</p>
+        </header>
+
+        <main class="main-content">
+            <div class="upload-section">
+                <form id="uploadForm" class="upload-form" enctype="multipart/form-data" novalidate>
+                    <div class="file-input-wrapper">
+                        <div class="file-drop-zone" id="dropZone">
+                            <div class="drop-zone-icon">📁</div>
+                            <p class="drop-zone-text">Перетащите файл сюда или нажмите для выбора</p>
+                            <p class="drop-zone-hint">Поддерживаемые форматы: .doc, .docx</p>
+                            <input type="file" 
+                                   id="fileInput" 
+                                   name="file" 
+                                   accept=".doc,.docx" 
+                                   class="file-input">
+                        </div>
+                    </div>
+                    
+                    <div class="file-info" id="fileInfo" style="display: none;">
+                        <span class="file-icon">📄</span>
+                        <span class="file-name" id="fileName"></span>
+                        <button type="button" class="remove-file" id="removeFile">×</button>
+                    </div>
+
+                    <button type="submit" class="submit-btn" id="submitBtn" disabled>
+                        <span class="btn-text">Анализировать</span>
+                        <span class="btn-loader" style="display: none;">
+                            <span class="spinner"></span>
+                            Анализирую...
+                        </span>
+                    </button>
+                </form>
+
+                <div class="error-message" id="errorMessage" style="display: none;"></div>
+            </div>
+
+            <div class="info-section">
+                <h2>Как это работает</h2>
+                <div class="steps">
+                    <div class="step">
+                        <div class="step-number">1</div>
+                        <div class="step-content">
+                            <h3>Загрузите документ</h3>
+                            <p>Выберите файл Word с техническим заданием</p>
+                        </div>
+                    </div>
+                    <div class="step">
+                        <div class="step-number">2</div>
+                        <div class="step-content">
+                            <h3>Автоматический анализ</h3>
+                            <p>ИИ проанализирует требования и структуру документа</p>
+                        </div>
+                    </div>
+                    <div class="step">
+                        <div class="step-number">3</div>
+                        <div class="step-content">
+                            <h3>Получите WBS</h3>
+                            <p>Детальная структура работ с оценками трудозатрат</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer class="footer">
+            <p>© 2024 Technical Specification Analyzer</p>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

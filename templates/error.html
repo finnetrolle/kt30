@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ошибка - Анализатор ТЗ</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>❌ Произошла ошибка</h1>
+        </header>
+
+        <main class="main-content">
+            <div class="error-container">
+                <div class="error-icon">⚠️</div>
+                <h2>Что-то пошло не так</h2>
+                <p class="error-text">{{ error }}</p>
+                <a href="{{ url_for('index') }}" class="action-btn">
+                    ← Вернуться на главную
+                </a>
+            </div>
+        </main>
+
+        <footer class="footer">
+            <p>© 2024 Technical Specification Analyzer</p>
+        </footer>
+    </div>
+</body>
+</html>

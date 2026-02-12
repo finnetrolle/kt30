@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Результаты анализа - WBS</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>📊 Результаты анализа</h1>
+            <p class="subtitle">Work Breakdown Structure на основе технического задания</p>
+        </header>
+
+        <nav class="breadcrumb">
+            <a href="{{ url_for('index') }}">← Загрузить новый файл</a>
+        </nav>
+
+        <main class="main-content results-page">
+            <!-- Project Info Section -->
+            <section class="result-section project-info-section">
+                <h2>📁 Информация о проекте</h2>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <span class="info-label">Исходный файл:</span>
+                        <span class="info-value">{{ filename }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Дата анализа:</span>
+                        <span class="info-value">{{ timestamp }}</span>
+                    </div>
+                    {% if result.project_info %}
+                    <div class="info-item">
+                        <span class="info-label">Название проекта:</span>
+                        <span class="info-value">{{ result.project_info.project_name or 'Не указано' }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Описание:</span>
+                        <span class="info-value">{{ result.project_info.description or 'Не указано' }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Оценочная длительность:</span>
+                        <span class="info-value">{{ result.project_info.estimated_duration or 'Не указано' }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Уровень сложности:</span>
+                        <span class="info-value complexity-{{ result.project_info.complexity_level | lower if result.project_info.complexity_level else 'unknown' }}">
+                            {{ result.project_info.complexity_level or 'Не указано' }}
+                        </span>
+                    </div>
+                    {% endif %}
+                </div>
+            </section>
+
+            <!-- WBS Phases Section -->
+            {% if result.wbs and result.wbs.phases %}
+            <section class="result-section wbs-section">
+                <h2>📋 Work Breakdown Structure</h2>
+                
+                {% for phase in result.wbs.phases %}
+                <div class="wbs-phase">
+                    <div class="phase-header" onclick="togglePhase(this)">
+                        <div class="phase-title">
+                            <span class="phase-id">{{ phase.id }}</span>
+                            <span class="phase-name">{{ phase.name }}</span>
+                        </div>
+                        <div class="phase-meta">
+                            <span class="phase-duration">⏱️ {{ phase.duration }}</span>
+                            <span class="toggle-icon">▼</span>
+                        </div>
+                    </div>
+                    
+                    <div class="phase-content">
+                        <p class="phase-description">{{ phase.description }}</p>
+                        
+                        {% if phase.work_packages %}
+                        <div class="work-packages">
+                            {% for wp in phase.work_packages %}
+                            <div class="work-package">
+                                <div class="wp-header" onclick="toggleWorkPackage(this)">
+                                    <div class="wp-title">
+                                        <span class="wp-id">{{ wp.id }}</span>
+                                        <span class="wp-name">{{ wp.name }}</span>
+                                    </div>
+                                    <div class="wp-meta">
+                                        <span class="wp-hours">🕐 {{ wp.estimated_hours }} ч.</span>
+                                        <span class="toggle-icon">▼</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="wp-content">
+                                    <p class="wp-description">{{ wp.description }}</p>
+                                    
+                                    {% if wp.deliverables %}
+                                    <div class="wp-deliverables">
+                                        <strong>Результаты:</strong>
+                                        <ul>
+                                            {% for deliverable in wp.deliverables %}
+                                            <li>{{ deliverable }}</li>
+                                            {% endfor %}
+                                        </ul>
+                                    </div>
+                                    {% endif %}
+                                    
+                                    {% if wp.skills_required %}
+                                    <div class="wp-skills">
+                                        <strong>Требуемые навыки:</strong>
+                                        <div class="skills-list">
+                                            {% for skill in wp.skills_required %}
+                                            <span class="skill-tag">{{ skill }}</span>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                    {% endif %}
+                                    
+                                    {% if wp.dependencies %}
+                                    <div class="wp-dependencies">
+                                        <strong>Зависимости:</strong>
+                                        <span>{{ wp.dependencies | join(', ') }}</span>
+                                    </div>
+                                    {% endif %}
+                                    
+                                    {% if wp.tasks %}
+                                    <div class="tasks-list">
+                                        <strong>Задачи:</strong>
+                                        {% for task in wp.tasks %}
+                                        <div class="task-item">
+                                            <div class="task-header">
+                                                <span class="task-id">{{ task.id }}</span>
+                                                <span class="task-name">{{ task.name }}</span>
+                                                <span class="task-hours">{{ task.estimated_hours }} ч.</span>
+                                            </div>
+                                            <p class="task-description">{{ task.description }}</p>
+                                        </div>
+                                        {% endfor %}
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </section>
+            {% endif %}
+
+            <!-- Risks Section -->
+            {% if result.risks %}
+            <section class="result-section risks-section">
+                <h2>⚠️ Риски проекта</h2>
+                <div class="risks-grid">
+                    {% for risk in result.risks %}
+                    <div class="risk-card risk-{{ risk.probability | lower }}-{{ risk.impact | lower }}">
+                        <div class="risk-header">
+                            <span class="risk-id">{{ risk.id }}</span>
+                            <span class="risk-probability">Вероятность: {{ risk.probability }}</span>
+                            <span class="risk-impact">Влияние: {{ risk.impact }}</span>
+                        </div>
+                        <p class="risk-description">{{ risk.description }}</p>
+                        <div class="risk-mitigation">
+                            <strong>Митигация:</strong> {{ risk.mitigation }}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            </section>
+            {% endif %}
+
+            <!-- Assumptions Section -->
+            {% if result.assumptions %}
+            <section class="result-section assumptions-section">
+                <h2>📝 Предположения</h2>
+                <ul class="assumptions-list">
+                    {% for assumption in result.assumptions %}
+                    <li>{{ assumption }}</li>
+                    {% endfor %}
+                </ul>
+            </section>
+            {% endif %}
+
+            <!-- Recommendations Section -->
+            {% if result.recommendations %}
+            <section class="result-section recommendations-section">
+                <h2>💡 Рекомендации</h2>
+                <div class="recommendations-grid">
+                    {% for rec in result.recommendations %}
+                    <div class="recommendation-card priority-{{ rec.priority | lower }}">
+                        <div class="rec-header">
+                            <span class="rec-category">{{ rec.category }}</span>
+                            <span class="rec-priority">Приоритет: {{ rec.priority }}</span>
+                        </div>
+                        <p class="rec-text">{{ rec.recommendation }}</p>
+                    </div>
+                    {% endfor %}
+                </div>
+            </section>
+            {% endif %}
+
+            <!-- Actions Section -->
+            <section class="result-section actions-section">
+                <h2>📥 Экспорт</h2>
+                <div class="action-buttons">
+                    <button onclick="exportAsJSON()" class="action-btn">
+                        📄 Скачать JSON
+                    </button>
+                    <button onclick="window.print()" class="action-btn">
+                        🖨️ Печать
+                    </button>
+                    <a href="{{ url_for('index') }}" class="action-btn secondary">
+                        ← Новый анализ
+                    </a>
+                </div>
+            </section>
+        </main>
+
+        <footer class="footer">
+            <p>© 2024 Technical Specification Analyzer</p>
+        </footer>
+    </div>
+
+    <script>
+        // Pass the result data to JavaScript for export
+        const analysisResult = {{ result | tojson | safe }};
+    </script>
+    <script src="{{ url_for('static', filename='js/results.js') }}"></script>
+</body>
+</html>
