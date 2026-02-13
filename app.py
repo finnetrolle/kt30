@@ -5,11 +5,12 @@ import os
 import uuid
 import logging
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
 from werkzeug.utils import secure_filename
 from config import Config, config as app_config
 from document_parser import parse_document
 from openai_client import analyze_specification
+from excel_export import export_wbs_to_excel
 
 
 # Configure logging
@@ -175,6 +176,7 @@ def create_app(config_class=Config):
         logger.info(f"Results found, rendering page for file: {result_data['filename']}")
         return render_template('results.html', 
                              result=result_data['result'],
+                             result_id=result_id,
                              filename=result_data['filename'],
                              timestamp=result_data['timestamp'],
                              usage=result_data.get('usage', {}))
@@ -190,6 +192,30 @@ def create_app(config_class=Config):
             return jsonify({'error': 'Result not found'}), 404
         
         return jsonify(result_data)
+    
+    @app.route('/export/excel/<result_id>')
+    def export_excel(result_id):
+        """Export WBS results as Excel file."""
+        logger.info(f"Excel export request for results ID: {result_id}")
+        result_data = analysis_results.get(result_id)
+        
+        if not result_data:
+            logger.warning(f"Excel export: Result not found for ID: {result_id}")
+            return jsonify({'error': 'Result not found'}), 404
+        
+        try:
+            excel_file, filename = export_wbs_to_excel(result_data['result'])
+            logger.info(f"Excel export successful for ID: {result_id}")
+            
+            return send_file(
+                excel_file,
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                as_attachment=True,
+                download_name=filename
+            )
+        except Exception as e:
+            logger.exception(f"Excel export failed for ID: {result_id}: {str(e)}")
+            return jsonify({'error': f'Failed to generate Excel: {str(e)}'}), 500
     
     @app.route('/health')
     def health():

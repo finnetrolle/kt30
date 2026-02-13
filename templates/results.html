@@ -203,6 +203,9 @@
             <section class="result-section actions-section">
                 <h2>📥 Экспорт</h2>
                 <div class="action-buttons">
+                    <a href="{{ url_for('export_excel', result_id=result_id) }}" class="action-btn">
+                        📊 Скачать Excel
+                    </a>
                     <button onclick="exportAsJSON()" class="action-btn">
                         📄 Скачать JSON
                     </button>
