@@ -10,7 +10,7 @@ from werkzeug.utils import secure_filename
 from config import Config, config as app_config
 from document_parser import parse_document
 from openai_client import analyze_specification
-from excel_export import export_wbs_to_excel
+from excel_export import export_wbs_to_excel, calculate_project_duration_with_parallel, build_dependencies_matrix
 
 
 # Configure logging
@@ -173,13 +173,31 @@ def create_app(config_class=Config):
             logger.warning(f"Result not found for ID: {result_id}")
             return render_template('error.html', error='Result not found'), 404
         
+        # Calculate actual duration considering parallel execution
+        result = result_data['result']
+        wbs_data = result.get('wbs', {}) if result else {}
+        
+        duration_info = calculate_project_duration_with_parallel(wbs_data)
+        dependencies_matrix = build_dependencies_matrix(wbs_data)
+        
+        # Add calculated duration to project_info if available
+        if 'project_info' in result:
+            result['project_info']['calculated_duration_days'] = duration_info['total_days']
+            result['project_info']['calculated_duration_weeks'] = duration_info['total_weeks']
+        
+        # Add dependencies matrix to result
+        result['dependencies_matrix'] = dependencies_matrix
+        
         logger.info(f"Results found, rendering page for file: {result_data['filename']}")
-        return render_template('results.html', 
-                             result=result_data['result'],
+        logger.info(f"Calculated duration: {duration_info['total_days']} days ({duration_info['total_weeks']} weeks)")
+        
+        return render_template('results.html',
+                             result=result,
                              result_id=result_id,
                              filename=result_data['filename'],
                              timestamp=result_data['timestamp'],
-                             usage=result_data.get('usage', {}))
+                             usage=result_data.get('usage', {}),
+                             calculated_duration=duration_info)
     
     @app.route('/api/results/<result_id>')
     def api_results(result_id):

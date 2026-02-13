@@ -12,6 +12,38 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+class StabilizationConfig:
+    """Configuration for result stabilization."""
+    
+    # Available modes:
+    # - single: Single pass, no stabilization (fastest, least stable)
+    # - validate: Single pass with validation and normalization
+    # - ensemble: Multiple passes with consensus (slowest, most stable)
+    # - ensemble_validate: Ensemble + validation (recommended for production)
+    MODE = os.getenv('STABILIZATION_MODE', 'validate')
+    
+    # Number of iterations for ensemble mode (3-5 recommended)
+    ENSEMBLE_ITERATIONS = int(os.getenv('ENSEMBLE_ITERATIONS', '3'))
+    
+    # Consensus method: 'median', 'mean', 'trimmed_mean'
+    CONSENSUS_METHOD = os.getenv('CONSENSUS_METHOD', 'median')
+    
+    # Outlier detection threshold (standard deviations)
+    OUTLIER_THRESHOLD = float(os.getenv('OUTLIER_THRESHOLD', '2.0'))
+    
+    # Auto-normalize values to acceptable ranges
+    AUTO_NORMALIZE = os.getenv('AUTO_NORMALIZE', 'true').lower() == 'true'
+    
+    # Apply validation rules
+    APPLY_RULES_VALIDATION = os.getenv('APPLY_RULES_VALIDATION', 'true').lower() == 'true'
+    
+    # Minimum confidence score to accept result
+    MIN_CONFIDENCE_SCORE = float(os.getenv('MIN_CONFIDENCE_SCORE', '0.7'))
+    
+    # Path to estimation rules file
+    ESTIMATION_RULES_PATH = os.getenv('ESTIMATION_RULES_PATH', 'data/estimation_rules.json')
+
+
 class Config:
     """Application configuration class."""
     
@@ -36,6 +68,11 @@ class Config:
     # WBS template configuration
     WBS_TEMPLATE_PATH = os.getenv('WBS_TEMPLATE_PATH', 'wbs_template.md')
     
+    # Stabilization configuration
+    STABILIZATION_MODE = StabilizationConfig.MODE
+    ENSEMBLE_ITERATIONS = StabilizationConfig.ENSEMBLE_ITERATIONS
+    ESTIMATION_RULES_PATH = StabilizationConfig.ESTIMATION_RULES_PATH
+    
     @staticmethod
     def init_app():
         """Initialize application configuration."""
@@ -51,6 +88,15 @@ class Config:
         logger.info(f"  - MAX_CONTENT_LENGTH: {Config.MAX_CONTENT_LENGTH} bytes")
         logger.info(f"  - WBS_TEMPLATE_PATH: {Config.WBS_TEMPLATE_PATH}")
         
+        # Log stabilization configuration
+        logger.info("Stabilization configuration:")
+        logger.info(f"  - STABILIZATION_MODE: {StabilizationConfig.MODE}")
+        logger.info(f"  - ENSEMBLE_ITERATIONS: {StabilizationConfig.ENSEMBLE_ITERATIONS}")
+        logger.info(f"  - CONSENSUS_METHOD: {StabilizationConfig.CONSENSUS_METHOD}")
+        logger.info(f"  - OUTLIER_THRESHOLD: {StabilizationConfig.OUTLIER_THRESHOLD}")
+        logger.info(f"  - AUTO_NORMALIZE: {StabilizationConfig.AUTO_NORMALIZE}")
+        logger.info(f"  - ESTIMATION_RULES_PATH: {StabilizationConfig.ESTIMATION_RULES_PATH}")
+        
         # Check if API key is set
         if Config.OPENAI_API_KEY:
             masked_key = Config.OPENAI_API_KEY[:8] + "..." + Config.OPENAI_API_KEY[-4:] if len(Config.OPENAI_API_KEY) > 12 else "***"
@@ -65,6 +111,13 @@ class Config:
             logger.info("Upload folder created")
         else:
             logger.info(f"Upload folder exists: {Config.UPLOAD_FOLDER}")
+        
+        # Create data folder if it doesn't exist
+        data_folder = os.path.dirname(Config.ESTIMATION_RULES_PATH)
+        if data_folder and not os.path.exists(data_folder):
+            logger.info(f"Creating data folder: {data_folder}")
+            os.makedirs(data_folder)
+            logger.info("Data folder created")
         
         logger.info("Configuration initialization completed")
     
@@ -84,6 +137,24 @@ class Config:
         is_allowed = extension in Config.ALLOWED_EXTENSIONS
         logger.debug(f"File extension check: {extension} -> {'allowed' if is_allowed else 'not allowed'}")
         return is_allowed
+    
+    @staticmethod
+    def get_stabilization_config() -> dict:
+        """Get stabilization configuration as dictionary.
+        
+        Returns:
+            Dictionary with stabilization settings
+        """
+        return {
+            'mode': StabilizationConfig.MODE,
+            'ensemble_iterations': StabilizationConfig.ENSEMBLE_ITERATIONS,
+            'consensus_method': StabilizationConfig.CONSENSUS_METHOD,
+            'outlier_threshold': StabilizationConfig.OUTLIER_THRESHOLD,
+            'auto_normalize': StabilizationConfig.AUTO_NORMALIZE,
+            'apply_rules_validation': StabilizationConfig.APPLY_RULES_VALIDATION,
+            'min_confidence_score': StabilizationConfig.MIN_CONFIDENCE_SCORE,
+            'estimation_rules_path': StabilizationConfig.ESTIMATION_RULES_PATH
+        }
 
 
 class DevelopmentConfig(Config):
@@ -94,6 +165,8 @@ class DevelopmentConfig(Config):
 class ProductionConfig(Config):
     """Production configuration."""
     DEBUG = False
+    # Use ensemble_validate for production by default
+    STABILIZATION_MODE = os.getenv('STABILIZATION_MODE', 'ensemble_validate')
 
 
 class TestingConfig(Config):

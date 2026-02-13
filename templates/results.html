@@ -41,7 +41,13 @@
                     </div>
                     <div class="info-item">
                         <span class="info-label">Оценочная длительность:</span>
-                        <span class="info-value">{{ result.project_info.estimated_duration or 'Не указано' }}</span>
+                        <span class="info-value">
+                            {% if result.project_info.calculated_duration_days %}
+                            {{ result.project_info.calculated_duration_days }} дн. ({{ result.project_info.calculated_duration_weeks }} нед.)
+                            {% else %}
+                            {{ result.project_info.estimated_duration or 'Не указано' }}
+                            {% endif %}
+                        </span>
                     </div>
                     <div class="info-item">
                         <span class="info-label">Уровень сложности:</span>

@@ -104,6 +104,36 @@ class BaseAgent:
         """
         raise NotImplementedError("Subclasses must implement _build_system_prompt")
     
+    def _fix_common_json_errors(self, text: str) -> str:
+        """Try to fix common JSON formatting errors.
+        
+        Args:
+            text: JSON text with potential errors
+            
+        Returns:
+            Fixed JSON text
+        """
+        import copy
+        
+        # Remove trailing commas before } or ]
+        fixed = re.sub(r',(\s*[}\]])', r'\1', text)
+        
+        # Fix missing commas between array elements (common LLM error)
+        # Pattern: "value"\n"value" -> "value",\n"value"
+        fixed = re.sub(r'"\s*\n\s*"', '",\n"', fixed)
+        
+        # Fix missing commas between object properties
+        # Pattern: ]\n"key" -> ],\n"key"
+        fixed = re.sub(r'(\])\s*\n\s*(")', r'\1,\n\2', fixed)
+        
+        # Fix missing commas after } before {
+        fixed = re.sub(r'(\})\s*\n\s*(\{)', r'\1,\n\2', fixed)
+        
+        # Fix missing commas after } before "
+        fixed = re.sub(r'(\})\s*\n\s*(")', r'\1,\n\2', fixed)
+        
+        return fixed
+    
     def _extract_json_from_response(self, text: str) -> Optional[str]:
         """Extract JSON from response that might contain markdown or other text.
         
@@ -120,10 +150,31 @@ class BaseAgent:
         except json.JSONDecodeError:
             pass
         
+        # Try to fix and parse
+        try:
+            fixed = self._fix_common_json_errors(text)
+            json.loads(fixed)
+            logger.info("   🔧 JSON исправлен (базовые исправления)")
+            return fixed
+        except json.JSONDecodeError:
+            pass
+        
         # Find JSON in markdown code blocks
         json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
         if json_match:
-            return json_match.group(1).strip()
+            json_text = json_match.group(1).strip()
+            try:
+                json.loads(json_text)
+                return json_text
+            except json.JSONDecodeError:
+                # Try to fix
+                try:
+                    fixed = self._fix_common_json_errors(json_text)
+                    json.loads(fixed)
+                    logger.info("   🔧 JSON в markdown исправлен")
+                    return fixed
+                except json.JSONDecodeError:
+                    pass
         
         # Find all JSON objects and try each
         brace_count = 0
@@ -149,14 +200,34 @@ class BaseAgent:
                 json.loads(candidate)
                 return candidate
             except json.JSONDecodeError:
-                continue
+                # Try to fix
+                try:
+                    fixed = self._fix_common_json_errors(candidate)
+                    json.loads(fixed)
+                    logger.info("   🔧 JSON кандидат исправлен")
+                    return fixed
+                except json.JSONDecodeError:
+                    continue
         
-        # Last resort - find first { and last }
+        # Last resort - find first { and last } and try to fix
         first_brace = text.find('{')
         last_brace = text.rfind('}')
         
         if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-            return text[first_brace:last_brace + 1]
+            json_text = text[first_brace:last_brace + 1]
+            try:
+                json.loads(json_text)
+                return json_text
+            except json.JSONDecodeError:
+                # Try to fix
+                try:
+                    fixed = self._fix_common_json_errors(json_text)
+                    json.loads(fixed)
+                    logger.info("   🔧 JSON (last resort) исправлен")
+                    return fixed
+                except json.JSONDecodeError:
+                    # Return original even if broken - let caller handle error
+                    return json_text
         
         return None
     
@@ -191,7 +262,7 @@ class BaseAgent:
             "model": self.model,
             "messages": messages,
             "temperature": 0.1,
-            "max_tokens": 8000
+            "max_tokens": 16000  # Increased for large WBS responses
         }
         
         if self.json_mode and expect_json:

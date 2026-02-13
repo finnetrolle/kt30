@@ -1,0 +1,224 @@
+{
+  "version": "1.0",
+  "description": "Справочник типовых трудозатрат для стабилизации оценок WBS",
+  
+  "task_templates": {
+    "Авторизация и безопасность": {
+      "Авторизация": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "Регистрация": {"min_hours": 6, "max_hours": 16, "typical_hours": 10, "complexity": "medium"},
+      "Логин/Logout": {"min_hours": 4, "max_hours": 8, "typical_hours": 6, "complexity": "low"},
+      "Восстановление пароля": {"min_hours": 4, "max_hours": 12, "typical_hours": 8, "complexity": "low"},
+      "OAuth интеграция": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "2FA": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "RBAC": {"min_hours": 16, "max_hours": 40, "typical_hours": 24, "complexity": "high"},
+      "Сессии": {"min_hours": 4, "max_hours": 12, "typical_hours": 8, "complexity": "low"}
+    },
+    "Пользовательский интерфейс": {
+      "Форма (простая)": {"min_hours": 2, "max_hours": 6, "typical_hours": 4, "complexity": "low"},
+      "Форма (сложная)": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "Страница (типовая)": {"min_hours": 4, "max_hours": 12, "typical_hours": 8, "complexity": "low"},
+      "Страница (сложная)": {"min_hours": 12, "max_hours": 32, "typical_hours": 20, "complexity": "medium"},
+      "Лендинг": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "Дашборд": {"min_hours": 16, "max_hours": 48, "typical_hours": 32, "complexity": "high"},
+      "Таблица данных": {"min_hours": 4, "max_hours": 16, "typical_hours": 8, "complexity": "medium"},
+      "Модальное окно": {"min_hours": 2, "max_hours": 6, "typical_hours": 4, "complexity": "low"},
+      "Виджет": {"min_hours": 4, "max_hours": 16, "typical_hours": 8, "complexity": "medium"},
+      "Навигация": {"min_hours": 4, "max_hours": 12, "typical_hours": 8, "complexity": "low"}
+    },
+    "Бизнес-логика": {
+      "CRUD (базовый)": {"min_hours": 4, "max_hours": 12, "typical_hours": 8, "complexity": "low"},
+      "CRUD (сложный)": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "Поиск (простой)": {"min_hours": 4, "max_hours": 12, "typical_hours": 8, "complexity": "low"},
+      "Поиск (расширенный)": {"min_hours": 12, "max_hours": 32, "typical_hours": 20, "complexity": "medium"},
+      "Фильтрация": {"min_hours": 4, "max_hours": 12, "typical_hours": 8, "complexity": "low"},
+      "Сортировка": {"min_hours": 2, "max_hours": 6, "typical_hours": 4, "complexity": "low"},
+      "Пагинация": {"min_hours": 2, "max_hours": 6, "typical_hours": 4, "complexity": "low"},
+      "Валидация (клиент)": {"min_hours": 2, "max_hours": 8, "typical_hours": 4, "complexity": "low"},
+      "Валидация (сервер)": {"min_hours": 4, "max_hours": 12, "typical_hours": 8, "complexity": "medium"},
+      "Воркфлоу": {"min_hours": 16, "max_hours": 48, "typical_hours": 32, "complexity": "high"},
+      "Уведомления": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "Шедулинг": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"}
+    },
+    "Работа с данными": {
+      "Миграция данных": {"min_hours": 8, "max_hours": 48, "typical_hours": 24, "complexity": "medium"},
+      "Импорт": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "Экспорт": {"min_hours": 4, "max_hours": 16, "typical_hours": 8, "complexity": "low"},
+      "Генерация отчетов": {"min_hours": 8, "max_hours": 32, "typical_hours": 16, "complexity": "medium"},
+      "Excel интеграция": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "PDF генерация": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "Резервное копирование": {"min_hours": 4, "max_hours": 16, "typical_hours": 8, "complexity": "low"}
+    },
+    "API и интеграции": {
+      "REST endpoint": {"min_hours": 2, "max_hours": 8, "typical_hours": 4, "complexity": "low"},
+      "GraphQL resolver": {"min_hours": 4, "max_hours": 12, "typical_hours": 8, "complexity": "medium"},
+      "Webhook": {"min_hours": 4, "max_hours": 12, "typical_hours": 8, "complexity": "medium"},
+      "Внешний API (простой)": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "Внешний API (сложный)": {"min_hours": 16, "max_hours": 48, "typical_hours": 32, "complexity": "high"},
+      "Интеграция (типовая)": {"min_hours": 16, "max_hours": 48, "typical_hours": 32, "complexity": "medium"},
+      "Интеграция (сложная)": {"min_hours": 32, "max_hours": 80, "typical_hours": 48, "complexity": "high"},
+      "SOAP": {"min_hours": 16, "max_hours": 48, "typical_hours": 32, "complexity": "high"},
+      "Message Queue": {"min_hours": 12, "max_hours": 32, "typical_hours": 20, "complexity": "medium"}
+    },
+    "Администрирование": {
+      "Админ-панель (базовая)": {"min_hours": 24, "max_hours": 60, "typical_hours": 40, "complexity": "medium"},
+      "Админ-панель (расширенная)": {"min_hours": 40, "max_hours": 100, "typical_hours": 64, "complexity": "high"},
+      "Настройки системы": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "Логирование": {"min_hours": 4, "max_hours": 16, "typical_hours": 8, "complexity": "low"},
+      "Мониторинг": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "Метрики": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"}
+    },
+    "Тестирование": {
+      "Unit тесты (модуль)": {"min_hours": 2, "max_hours": 8, "typical_hours": 4, "complexity": "low"},
+      "Integration тесты": {"min_hours": 4, "max_hours": 16, "typical_hours": 8, "complexity": "medium"},
+      "E2E тесты (сценарий)": {"min_hours": 4, "max_hours": 12, "typical_hours": 8, "complexity": "medium"},
+      "Тестирование API": {"min_hours": 4, "max_hours": 16, "typical_hours": 8, "complexity": "medium"},
+      "Нагрузочное тестирование": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "Security тестирование": {"min_hours": 8, "max_hours": 32, "typical_hours": 16, "complexity": "high"}
+    },
+    "DevOps": {
+      "CI/CD pipeline": {"min_hours": 8, "max_hours": 32, "typical_hours": 16, "complexity": "medium"},
+      "Docker контейнер": {"min_hours": 4, "max_hours": 16, "typical_hours": 8, "complexity": "low"},
+      "Kubernetes конфигурация": {"min_hours": 8, "max_hours": 32, "typical_hours": 16, "complexity": "medium"},
+      "Развертывание (dev)": {"min_hours": 4, "max_hours": 12, "typical_hours": 8, "complexity": "low"},
+      "Развертывание (prod)": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "Настройка сервера": {"min_hours": 4, "max_hours": 16, "typical_hours": 8, "complexity": "low"}
+    },
+    "Документация": {
+      "Техническая документация": {"min_hours": 4, "max_hours": 16, "typical_hours": 8, "complexity": "low"},
+      "API документация": {"min_hours": 4, "max_hours": 12, "typical_hours": 8, "complexity": "low"},
+      "Пользовательская документация": {"min_hours": 8, "max_hours": 24, "typical_hours": 16, "complexity": "medium"},
+      "README": {"min_hours": 2, "max_hours": 6, "typical_hours": 4, "complexity": "low"}
+    }
+  },
+  
+  "phase_ratios": {
+    "Планирование и анализ": {
+      "ratio": 0.10,
+      "min_ratio": 0.05,
+      "max_ratio": 0.15,
+      "description": "Анализ требований, планирование проекта"
+    },
+    "Проектирование": {
+      "ratio": 0.15,
+      "min_ratio": 0.10,
+      "max_ratio": 0.20,
+      "description": "Архитектура, дизайн БД, UI/UX дизайн"
+    },
+    "Разработка": {
+      "ratio": 0.40,
+      "min_ratio": 0.30,
+      "max_ratio": 0.50,
+      "description": "Непосредственная разработка функционала"
+    },
+    "Тестирование": {
+      "ratio": 0.15,
+      "min_ratio": 0.10,
+      "max_ratio": 0.20,
+      "description": "Тестирование, QA, исправление багов"
+    },
+    "Развертывание": {
+      "ratio": 0.10,
+      "min_ratio": 0.05,
+      "max_ratio": 0.15,
+      "description": "Деплой, настройка окружения, миграции"
+    },
+    "Поддержка": {
+      "ratio": 0.10,
+      "min_ratio": 0.05,
+      "max_ratio": 0.15,
+      "description": "Пост-релизная поддержка, документация"
+    }
+  },
+  
+  "complexity_multipliers": {
+    "Низкий": {
+      "multiplier": 0.7,
+      "description": "Простой проект с типовым функционалом",
+      "max_team_size": 3,
+      "typical_duration_weeks": "4-8"
+    },
+    "Средний": {
+      "multiplier": 1.0,
+      "description": "Стандартный проект с некоторыми сложностями",
+      "max_team_size": 5,
+      "typical_duration_weeks": "8-16"
+    },
+    "Высокий": {
+      "multiplier": 1.4,
+      "description": "Сложный проект с интеграциями и нестандартным функционалом",
+      "max_team_size": 8,
+      "typical_duration_weeks": "16-32"
+    },
+    "Очень высокий": {
+      "multiplier": 1.8,
+      "description": "Критически сложный проект, высокая ответственность",
+      "max_team_size": 12,
+      "typical_duration_weeks": "32+"
+    }
+  },
+  
+  "project_type_baselines": {
+    "Веб-приложение (простое)": {
+      "baseline_hours": 160,
+      "range_hours": [80, 320],
+      "typical_duration_weeks": "4-8"
+    },
+    "Веб-приложение (среднее)": {
+      "baseline_hours": 400,
+      "range_hours": [240, 640],
+      "typical_duration_weeks": "8-16"
+    },
+    "Веб-приложение (сложное)": {
+      "baseline_hours": 800,
+      "range_hours": [480, 1600],
+      "typical_duration_weeks": "16-32"
+    },
+    "Мобильное приложение (простое)": {
+      "baseline_hours": 240,
+      "range_hours": [160, 400],
+      "typical_duration_weeks": "6-10"
+    },
+    "Мобильное приложение (среднее)": {
+      "baseline_hours": 480,
+      "range_hours": [320, 800],
+      "typical_duration_weeks": "10-20"
+    },
+    "API сервис": {
+      "baseline_hours": 160,
+      "range_hours": [80, 400],
+      "typical_duration_weeks": "4-10"
+    },
+    "Интеграция": {
+      "baseline_hours": 200,
+      "range_hours": [80, 480],
+      "typical_duration_weeks": "4-12"
+    },
+    "Микросервис": {
+      "baseline_hours": 120,
+      "range_hours": [60, 320],
+      "typical_duration_weeks": "3-8"
+    }
+  },
+  
+  "limits": {
+    "min_hours_per_task": 2,
+    "max_hours_per_task": 80,
+    "min_hours_per_work_package": 4,
+    "max_hours_per_work_package": 160,
+    "min_hours_per_phase": 8,
+    "max_hours_per_phase": 500,
+    "min_total_hours": 40,
+    "max_total_hours": 5000,
+    "hours_per_day": 8,
+    "days_per_week": 5
+  },
+  
+  "stabilization_settings": {
+    "ensemble_iterations": 3,
+    "consensus_method": "median",
+    "outlier_threshold_std": 2.0,
+    "min_confidence_score": 0.7,
+    "auto_normalize": true,
+    "apply_rules_validation": true
+  }
+}

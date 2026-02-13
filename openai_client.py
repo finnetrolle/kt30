@@ -347,9 +347,17 @@ def analyze_specification(document_content: str, request_id: str = None) -> Dict
     
     try:
         from agents import AgentOrchestrator
+        from config import Config, StabilizationConfig
         
-        orchestrator = AgentOrchestrator()
-        result = orchestrator.generate_wbs(document_content)
+        # Initialize orchestrator with stabilization settings
+        orchestrator = AgentOrchestrator(
+            stabilization_mode=StabilizationConfig.MODE,
+            estimation_rules_path=StabilizationConfig.ESTIMATION_RULES_PATH
+        )
+        result = orchestrator.generate_wbs(
+            document_content,
+            stabilization_mode=StabilizationConfig.MODE
+        )
         
         if result["success"]:
             logger.info(f"{log_prefix}Multi-agent WBS generation successful")
