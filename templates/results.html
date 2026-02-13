@@ -66,7 +66,7 @@
                             <span class="phase-name">{{ phase.name }}</span>
                         </div>
                         <div class="phase-meta">
-                            <span class="phase-duration">⏱️ {{ phase.duration }}</span>
+                            <span class="phase-duration">⏱️ {{ phase.duration }} {% if phase.duration_days %}({{ phase.duration_days }} дн.){% endif %}</span>
                             <span class="toggle-icon">▼</span>
                         </div>
                     </div>
@@ -77,20 +77,40 @@
                         {% if phase.work_packages %}
                         <div class="work-packages">
                             {% for wp in phase.work_packages %}
-                            <div class="work-package">
+                            <div class="work-package {% if wp.can_start_parallel %}parallel-work{% endif %}">
                                 <div class="wp-header" onclick="toggleWorkPackage(this)">
                                     <div class="wp-title">
                                         <span class="wp-id">{{ wp.id }}</span>
                                         <span class="wp-name">{{ wp.name }}</span>
+                                        {% if wp.can_start_parallel %}
+                                        <span class="parallel-badge" title="Можно выполнять параллельно">🔄 Параллельно</span>
+                                        {% endif %}
                                     </div>
                                     <div class="wp-meta">
                                         <span class="wp-hours">🕐 {{ wp.estimated_hours }} ч.</span>
+                                        {% if wp.duration_days %}
+                                        <span class="wp-duration">📅 {{ wp.duration_days }} дн.</span>
+                                        {% endif %}
                                         <span class="toggle-icon">▼</span>
                                     </div>
                                 </div>
                                 
                                 <div class="wp-content">
                                     <p class="wp-description">{{ wp.description }}</p>
+                                    
+                                    {% if wp.dependencies and wp.dependencies | length > 0 %}
+                                    <div class="wp-dependencies">
+                                        <strong>⚠️ Зависит от:</strong>
+                                        <span class="dependency-list">{{ wp.dependencies | join(', ') }}</span>
+                                    </div>
+                                    {% endif %}
+                                    
+                                    {% if wp.can_start_parallel %}
+                                    <div class="parallel-info">
+                                        <strong>✅ Параллельное выполнение:</strong>
+                                        <span>Этот пакет работ может выполняться параллельно с другими пакетами той же фазы</span>
+                                    </div>
+                                    {% endif %}
                                     
                                     {% if wp.deliverables %}
                                     <div class="wp-deliverables">
@@ -114,24 +134,33 @@
                                     </div>
                                     {% endif %}
                                     
-                                    {% if wp.dependencies %}
-                                    <div class="wp-dependencies">
-                                        <strong>Зависимости:</strong>
-                                        <span>{{ wp.dependencies | join(', ') }}</span>
-                                    </div>
-                                    {% endif %}
-                                    
                                     {% if wp.tasks %}
                                     <div class="tasks-list">
                                         <strong>Задачи:</strong>
                                         {% for task in wp.tasks %}
-                                        <div class="task-item">
+                                        <div class="task-item {% if task.can_start_parallel %}parallel-task{% endif %}">
                                             <div class="task-header">
                                                 <span class="task-id">{{ task.id }}</span>
                                                 <span class="task-name">{{ task.name }}</span>
                                                 <span class="task-hours">{{ task.estimated_hours }} ч.</span>
+                                                {% if task.duration_days %}
+                                                <span class="task-duration">{{ task.duration_days }} дн.</span>
+                                                {% endif %}
+                                                {% if task.can_start_parallel %}
+                                                <span class="parallel-mini-badge">🔄</span>
+                                                {% endif %}
                                             </div>
                                             <p class="task-description">{{ task.description }}</p>
+                                            {% if task.dependencies and task.dependencies | length > 0 %}
+                                            <div class="task-dependencies">
+                                                <small>⚠️ Зависит от: {{ task.dependencies | join(', ') }}</small>
+                                            </div>
+                                            {% endif %}
+                                            {% if task.skills_required %}
+                                            <div class="task-skills">
+                                                <small>Навыки: {% for skill in task.skills_required %}<span class="skill-mini-tag">{{ skill }}</span> {% endfor %}</small>
+                                            </div>
+                                            {% endif %}
                                         </div>
                                         {% endfor %}
                                     </div>
@@ -145,6 +174,48 @@
                 </div>
                 {% endfor %}
             </section>
+            
+            <!-- Dependencies Matrix Section -->
+            {% if result.dependencies_matrix %}
+            <section class="result-section dependencies-section">
+                <h2>🔗 Матрица зависимостей</h2>
+                <div class="dependencies-info">
+                    <p>На диаграмме ниже показаны зависимости между задачами и возможности параллельного выполнения.</p>
+                </div>
+                <div class="dependencies-matrix">
+                    <table class="deps-table">
+                        <thead>
+                            <tr>
+                                <th>Задача</th>
+                                <th>Зависит от</th>
+                                <th>Можно выполнять параллельно с</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for dep in result.dependencies_matrix %}
+                            <tr>
+                                <td class="dep-task-id">{{ dep.task_id }}</td>
+                                <td class="dep-deps">
+                                    {% if dep.depends_on and dep.depends_on | length > 0 %}
+                                    <span class="dep-item">{{ dep.depends_on | join(', ') }}</span>
+                                    {% else %}
+                                    <span class="no-deps">—</span>
+                                    {% endif %}
+                                </td>
+                                <td class="dep-parallel">
+                                    {% if dep.parallel_with and dep.parallel_with | length > 0 %}
+                                    <span class="parallel-item">{{ dep.parallel_with | join(', ') }}</span>
+                                    {% else %}
+                                    <span class="no-parallel">—</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+            {% endif %}
             {% endif %}
 
             <!-- Risks Section -->
