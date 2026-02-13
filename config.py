@@ -63,7 +63,7 @@ class Config:
     # File upload configuration
     UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'uploads')
     MAX_CONTENT_LENGTH = int(os.getenv('MAX_CONTENT_LENGTH', 16 * 1024 * 1024))  # 16MB default
-    ALLOWED_EXTENSIONS = {'doc', 'docx'}
+    ALLOWED_EXTENSIONS = {'doc', 'docx', 'pdf'}
     
     # WBS template configuration
     WBS_TEMPLATE_PATH = os.getenv('WBS_TEMPLATE_PATH', 'wbs_template.md')
