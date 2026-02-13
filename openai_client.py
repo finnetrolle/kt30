@@ -333,6 +333,58 @@ JSON:"""
 def analyze_specification(document_content: str, request_id: str = None) -> Dict[str, Any]:
     """Analyze a technical specification and generate WBS.
     
+    This function now uses the multi-agent system for better results.
+    
+    Args:
+        document_content: Content of the technical specification document
+        request_id: Optional request ID for logging
+        
+    Returns:
+        Dictionary containing the analysis result
+    """
+    log_prefix = f"[{request_id}] " if request_id else ""
+    logger.info(f"{log_prefix}Using multi-agent system for WBS generation")
+    
+    try:
+        from agents import AgentOrchestrator
+        
+        orchestrator = AgentOrchestrator()
+        result = orchestrator.generate_wbs(document_content)
+        
+        if result["success"]:
+            logger.info(f"{log_prefix}Multi-agent WBS generation successful")
+            
+            # Log conversation summary
+            conversation_summary = orchestrator.get_conversation_summary()
+            logger.debug(f"{log_prefix}Agent conversation:\n{conversation_summary}")
+            
+            return {
+                "success": True,
+                "data": result["data"],
+                "usage": {
+                    "elapsed_seconds": result["metadata"]["elapsed_seconds"],
+                    "iterations": result["metadata"]["iterations"],
+                    "agent_system": "multi-agent-v1"
+                },
+                "metadata": result["metadata"],
+                "agent_conversation": result.get("agent_conversation", [])
+            }
+        else:
+            logger.error(f"{log_prefix}Multi-agent WBS generation failed: {result.get('error')}")
+            return result
+            
+    except Exception as e:
+        logger.exception(f"{log_prefix}Multi-agent system error: {str(e)}")
+        logger.info(f"{log_prefix}Falling back to single-agent system")
+        
+        # Fallback to original single-agent approach
+        client = OpenAIClient()
+        return client.analyze_document(document_content, request_id=request_id)
+
+
+def analyze_specification_single_agent(document_content: str, request_id: str = None) -> Dict[str, Any]:
+    """Analyze using the original single-agent approach (for comparison).
+    
     Args:
         document_content: Content of the technical specification document
         request_id: Optional request ID for logging
