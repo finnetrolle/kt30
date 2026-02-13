@@ -504,24 +504,41 @@ def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
         
         # Distribute hours among roles
         hours_by_role = distribute_hours_by_role(item['hours'], item['skills'])
-        item_cost = 0
+        
+        # Build the cost formula that references rates from Sheet 2
+        cost_formula_parts = []
         
         # Role hours columns (start from column 4 now)
         for col, role in enumerate(all_roles, 4):
             hours = hours_by_role.get(role, 0)
-            cell = ws_wbs.cell(row=row, column=col, value=round(hours, 1) if hours > 0 else "")
+            cell = ws_wbs.cell(row=row, column=col, value=round(hours, 1) if hours > 0 else 0)
             cell.font = font
             cell.border = border
             cell.alignment = Alignment(horizontal='center')
             if fill:
                 cell.fill = fill
+            # Hide zero values
+            if hours == 0:
+                cell.number_format = '0.0;0.0;'  # Format to hide zero values
             
             # Update totals
             role_totals[role] += hours
-            item_cost += hours * get_role_rate(role, rates)
+            
+            # Build formula part: hours * VLOOKUP for rate
+            # Only add to formula if there are hours
+            if hours > 0:
+                col_letter = get_column_letter(col)
+                # VLOOKUP formula to find rate for this role in 'Ставки профессий' sheet
+                formula_part = f"IF({col_letter}{row}=0,0,{col_letter}{row}*VLOOKUP(\"{role}\",'Ставки профессий'!$A:$B,2,FALSE))"
+                cost_formula_parts.append(formula_part)
         
-        # Cost column
-        cell = ws_wbs.cell(row=row, column=len(headers), value=round(item_cost, 0))
+        # Cost column with formula
+        cost_col = len(headers)
+        if cost_formula_parts:
+            cost_formula = "=" + "+".join(cost_formula_parts)
+            cell = ws_wbs.cell(row=row, column=cost_col, value=cost_formula)
+        else:
+            cell = ws_wbs.cell(row=row, column=cost_col, value=0)
         cell.font = font
         cell.border = border
         cell.alignment = Alignment(horizontal='right')
@@ -529,11 +546,13 @@ def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
         if fill:
             cell.fill = fill
         
-        total_cost += item_cost
         row += 1
+    
+    data_end_row = row - 1
     
     # Add totals row
     row += 1
+    totals_row = row
     
     # Label
     cell = ws_wbs.cell(row=row, column=1, value="ИТОГО")
@@ -550,17 +569,21 @@ def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
     cell.fill = total_fill
     cell.border = border
     
-    # Role totals (start from column 4)
+    # Role totals with SUM formulas (start from column 4)
     for col, role in enumerate(all_roles, 4):
-        cell = ws_wbs.cell(row=row, column=col, value=round(role_totals[role], 1))
+        col_letter = get_column_letter(col)
+        formula = f"=SUM({col_letter}2:{col_letter}{data_end_row})"
+        cell = ws_wbs.cell(row=row, column=col, value=formula)
         cell.font = total_font
         cell.fill = total_fill
         cell.border = border
         cell.alignment = Alignment(horizontal='center')
         cell.number_format = '#,##0.0'
     
-    # Total cost
-    cell = ws_wbs.cell(row=row, column=len(headers), value=round(total_cost, 0))
+    # Total cost with SUM formula
+    cost_col_letter = get_column_letter(len(headers))
+    cost_formula = f"=SUM({cost_col_letter}2:{cost_col_letter}{data_end_row})"
+    cell = ws_wbs.cell(row=row, column=len(headers), value=cost_formula)
     cell.font = total_font
     cell.fill = total_fill
     cell.border = border
@@ -586,26 +609,29 @@ def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
     ws_rates.column_dimensions['B'].width = 20
     
     # Add all roles with their rates
-    row = 2
+    rate_row = 2
     all_roles_with_rates = set(all_roles) | set(DEFAULT_ROLE_RATES.keys())
     
-    for role in sorted(all_roles_with_rates):
-        cell = ws_rates.cell(row=row, column=1, value=role)
+    # Sort roles, but put roles that are actually used first
+    sorted_roles = sorted(all_roles_with_rates, key=lambda r: (r not in all_roles, r))
+    
+    for role in sorted_roles:
+        cell = ws_rates.cell(row=rate_row, column=1, value=role)
         cell.border = border
         
         rate = get_role_rate(role, rates)
-        cell = ws_rates.cell(row=row, column=2, value=rate)
+        cell = ws_rates.cell(row=rate_row, column=2, value=rate)
         cell.border = border
         cell.alignment = Alignment(horizontal='right')
         cell.number_format = '#,##0'
         
-        row += 1
+        rate_row += 1
     
     # Add note about editing rates
-    row += 2
-    cell = ws_rates.cell(row=row, column=1, value="Примечание: Измените ставки на этом листе для пересчета стоимости.")
+    rate_row += 2
+    cell = ws_rates.cell(row=rate_row, column=1, value="Примечание: Измените ставки на этом листе для автоматического пересчета стоимости на листе WBS.")
     cell.font = Font(italic=True, color="666666")
-    ws_rates.merge_cells(start_row=row, start_column=1, end_row=row, end_column=2)
+    ws_rates.merge_cells(start_row=rate_row, start_column=1, end_row=rate_row, end_column=2)
     
     # Freeze header row
     ws_rates.freeze_panes = 'A2'
