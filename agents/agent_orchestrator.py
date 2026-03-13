@@ -12,6 +12,7 @@ from .planner_agent import PlannerAgent
 from .validator_agent import ValidatorAgent, ValidationResult
 from .result_stabilizer import ResultStabilizer, EstimationRules, EnsembleGenerator
 from .base_agent import AgentEventLogger
+from progress_tracker import ProgressTracker
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class AgentOrchestrator:
         self.validator = ValidatorAgent()
         self.conversation_log: List[Dict[str, Any]] = []
         self.event_logger = AgentEventLogger()
+        self._progress: Optional[ProgressTracker] = None
         
         # Load estimation rules
         self.estimation_rules = EstimationRules(estimation_rules_path)
@@ -92,6 +94,18 @@ class AgentOrchestrator:
         logger.info("🎬 Оркестратор агентов инициализирован")
         logger.info(f"   Подключенные агенты: {self.analyst.name}, {self.planner.name}, {self.validator.name}")
         logger.info(f"   Режим стабилизации: {self.stabilization_mode}")
+    
+    def set_progress_tracker(self, tracker: Optional[ProgressTracker]):
+        """Attach a progress tracker and propagate to all agents.
+        
+        Args:
+            tracker: ProgressTracker instance or None
+        """
+        self._progress = tracker
+        self.event_logger.set_progress_tracker(tracker)
+        self.analyst.set_progress_tracker(tracker)
+        self.planner.set_progress_tracker(tracker)
+        self.validator.set_progress_tracker(tracker)
     
     def _log_conversation(self, agent_name: str, action: str, details: Dict[str, Any]):
         """Log a conversation step.
@@ -189,6 +203,10 @@ class AgentOrchestrator:
         logger.info(f"   Режим стабилизации: {mode}")
         logger.info("="*70)
         
+        if self._progress:
+            self._progress.stage("🚀 Запуск мульти-агентной системы генерации WBS")
+            self._progress.info(f"Режим стабилизации: {mode}")
+        
         start_time = time.time()
         self.conversation_log = []
         
@@ -210,6 +228,9 @@ class AgentOrchestrator:
         # ============================================================
         # STEP 1: Analyst analyzes the specification
         # ============================================================
+        if self._progress:
+            self._progress.stage("📋 Этап 1/6: Анализ технического задания")
+        
         self.event_logger.log_agent_started(
             self.analyst.name, 
             "Анализ технического задания и извлечение требований"
@@ -250,6 +271,9 @@ class AgentOrchestrator:
         # ============================================================
         # STEP 2: Check if clarifications are needed
         # ============================================================
+        if self._progress:
+            self._progress.stage("🔍 Этап 2/6: Проверка необходимости уточнений")
+        
         clarifications = analysis.get("clarifications_needed", [])
         if clarifications and len(clarifications) > 0:
             logger.info(f"\n📝 Требуются уточнения ({len(clarifications)} вопросов):")
@@ -263,6 +287,9 @@ class AgentOrchestrator:
         # ============================================================
         # STEP 3: Hand off to Planner Agent
         # ============================================================
+        if self._progress:
+            self._progress.stage("📐 Этап 3/6: Создание Work Breakdown Structure")
+        
         self.event_logger.log_agent_handoff(
             from_agent=self.analyst.name,
             to_agent=self.planner.name,
@@ -313,6 +340,9 @@ class AgentOrchestrator:
         # ============================================================
         # STEP 4: Validate and potentially refine
         # ============================================================
+        if self._progress:
+            self._progress.stage("🔄 Этап 4/6: Валидация и уточнение WBS")
+        
         validation = self.planner.validate_wbs(wbs)
         
         iteration = 0
@@ -349,11 +379,18 @@ class AgentOrchestrator:
         # ============================================================
         # STEP 5: Cross-validation — check FR coverage in WBS
         # ============================================================
+        if self._progress:
+            self._progress.stage("📋 Этап 5/6: Проверка покрытия требований")
+        
         coverage_result = self._check_requirements_coverage(analysis, wbs)
         if coverage_result["uncovered"]:
             logger.info(f"\n📋 Непокрытые требования: {len(coverage_result['uncovered'])}")
             for fr in coverage_result["uncovered"]:
                 logger.info(f"   - {fr}")
+            if self._progress:
+                self._progress.info(
+                    f"⚠️ Непокрытые требования: {len(coverage_result['uncovered'])} из {coverage_result['total']}"
+                )
             
             self._log_conversation("Orchestrator", "coverage_check", {
                 "total_requirements": coverage_result["total"],
@@ -381,6 +418,10 @@ class AgentOrchestrator:
                     )
         else:
             logger.info("✅ Все функциональные требования покрыты задачами в WBS")
+            if self._progress:
+                self._progress.info(
+                    f"✅ Все {coverage_result['total']} функциональных требований покрыты задачами в WBS"
+                )
             self._log_conversation("Orchestrator", "coverage_check", {
                 "total_requirements": coverage_result["total"],
                 "covered_count": coverage_result["covered_count"],
@@ -390,6 +431,9 @@ class AgentOrchestrator:
         # ============================================================
         # STEP 6: Validation with Validator Agent (if enabled)
         # ============================================================
+        if self._progress:
+            self._progress.stage("✅ Этап 6/6: Финальная валидация и нормализация")
+        
         validation_result = None
         if mode in [StabilizationMode.VALIDATE, StabilizationMode.ENSEMBLE_VALIDATE]:
             self.event_logger.log_agent_started(
@@ -446,6 +490,14 @@ class AgentOrchestrator:
             logger.info(f"   Confidence: {validation_result.confidence_score:.2f}")
         logger.info(f"   Покрытие FR: {coverage_result['covered_count']}/{coverage_result['total']}")
         logger.info("="*70 + "\n")
+        
+        if self._progress:
+            phases_count = len(wbs.get('wbs', {}).get('phases', []))
+            total_hours = wbs.get('project_info', {}).get('total_estimated_hours', 0)
+            self._progress.info(
+                f"🏁 Генерация завершена за {elapsed_time:.1f} сек. "
+                f"Фаз: {phases_count}, оценка: {total_hours} ч."
+            )
         
         result = {
             "success": True,

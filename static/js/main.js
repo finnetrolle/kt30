@@ -11,8 +11,14 @@ document.addEventListener('DOMContentLoaded', function() {
     const removeFile = document.getElementById('removeFile');
     const submitBtn = document.getElementById('submitBtn');
     const errorMessage = document.getElementById('errorMessage');
+    const progressPanel = document.getElementById('progressPanel');
+    const progressLog = document.getElementById('progressLog');
+    const progressStage = document.getElementById('progressStage');
+    const progressElapsed = document.getElementById('progressElapsed');
     
     let selectedFile = null;
+    let elapsedTimer = null;
+    let elapsedSeconds = 0;
 
     // Drag and drop handlers
     dropZone.addEventListener('dragover', function(e) {
@@ -104,7 +110,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     /**
-     * Upload file to server
+     * Upload file to server and subscribe to progress SSE
      */
     async function uploadFile(file) {
         const formData = new FormData();
@@ -123,8 +129,9 @@ document.addEventListener('DOMContentLoaded', function() {
             const result = await response.json();
             
             if (response.ok && result.success) {
-                // Redirect to results page
-                window.location.href = result.redirect_url;
+                // Upload accepted — subscribe to progress stream
+                showProgressPanel();
+                subscribeToProgress(result.task_id);
             } else {
                 showError(result.error || 'Произошла ошибка при обработке файла');
                 setLoadingState(false);
@@ -133,6 +140,153 @@ document.addEventListener('DOMContentLoaded', function() {
             showError('Ошибка сети: ' + error.message);
             setLoadingState(false);
         }
+    }
+
+    /**
+     * Show the progress panel and start elapsed timer
+     */
+    function showProgressPanel() {
+        progressPanel.style.display = 'block';
+        progressLog.innerHTML = '';
+        elapsedSeconds = 0;
+        progressElapsed.textContent = '0 сек';
+        
+        elapsedTimer = setInterval(function() {
+            elapsedSeconds++;
+            if (elapsedSeconds < 60) {
+                progressElapsed.textContent = elapsedSeconds + ' сек';
+            } else {
+                const mins = Math.floor(elapsedSeconds / 60);
+                const secs = elapsedSeconds % 60;
+                progressElapsed.textContent = mins + ' мин ' + secs + ' сек';
+            }
+        }, 1000);
+    }
+
+    /**
+     * Stop the elapsed timer
+     */
+    function stopElapsedTimer() {
+        if (elapsedTimer) {
+            clearInterval(elapsedTimer);
+            elapsedTimer = null;
+        }
+    }
+
+    /**
+     * Subscribe to SSE progress stream
+     */
+    function subscribeToProgress(taskId) {
+        const eventSource = new EventSource('/progress/' + taskId);
+        
+        // Handle stage events (major steps)
+        eventSource.addEventListener('stage', function(e) {
+            const data = JSON.parse(e.data);
+            progressStage.textContent = data.message;
+            addLogEntry(data.message, 'stage');
+        });
+        
+        // Handle agent events
+        eventSource.addEventListener('agent', function(e) {
+            const data = JSON.parse(e.data);
+            addLogEntry(data.message, 'agent');
+        });
+        
+        // Handle info events
+        eventSource.addEventListener('info', function(e) {
+            const data = JSON.parse(e.data);
+            addLogEntry(data.message, 'info');
+        });
+        
+        // Handle completion
+        eventSource.addEventListener('complete', function(e) {
+            const data = JSON.parse(e.data);
+            stopElapsedTimer();
+            addLogEntry('✅ ' + data.message, 'complete');
+            progressStage.textContent = '✅ Анализ завершён! Перенаправление...';
+            
+            // Remove spinner from header
+            const spinnerEl = progressPanel.querySelector('.spinner-small');
+            if (spinnerEl) {
+                spinnerEl.style.display = 'none';
+            }
+            
+            eventSource.close();
+            
+            // Redirect after a short delay
+            setTimeout(function() {
+                window.location.href = data.data.redirect_url;
+            }, 1500);
+        });
+        
+        // Handle error events from the server
+        eventSource.addEventListener('error_event', function(e) {
+            const data = JSON.parse(e.data);
+            stopElapsedTimer();
+            addLogEntry('❌ ' + data.message, 'error');
+            progressStage.textContent = '❌ Ошибка';
+            
+            // Remove spinner from header
+            const spinnerEl = progressPanel.querySelector('.spinner-small');
+            if (spinnerEl) {
+                spinnerEl.style.display = 'none';
+            }
+            
+            showError(data.message);
+            eventSource.close();
+            setLoadingState(false);
+        });
+        
+        // Handle SSE connection errors
+        eventSource.onerror = function(e) {
+            // EventSource will auto-reconnect, but if the server closed the stream
+            // (after complete/error event), this is expected
+            if (eventSource.readyState === EventSource.CLOSED) {
+                return;
+            }
+            console.error('SSE connection error', e);
+        };
+        
+        // Also listen for 'error' event type from our backend
+        eventSource.addEventListener('error', function(e) {
+            const data = JSON.parse(e.data);
+            stopElapsedTimer();
+            addLogEntry('❌ ' + data.message, 'error');
+            progressStage.textContent = '❌ Ошибка';
+            
+            const spinnerEl = progressPanel.querySelector('.spinner-small');
+            if (spinnerEl) {
+                spinnerEl.style.display = 'none';
+            }
+            
+            showError(data.message);
+            eventSource.close();
+            setLoadingState(false);
+        });
+    }
+
+    /**
+     * Add a log entry to the progress panel
+     */
+    function addLogEntry(message, type) {
+        const entry = document.createElement('div');
+        entry.className = 'progress-log-entry progress-log-' + type;
+        
+        const time = document.createElement('span');
+        time.className = 'progress-log-time';
+        const now = new Date();
+        time.textContent = now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        
+        const text = document.createElement('span');
+        text.className = 'progress-log-text';
+        text.textContent = message;
+        
+        entry.appendChild(time);
+        entry.appendChild(text);
+        progressLog.appendChild(entry);
+        
+        // Auto-scroll to bottom
+        progressLog.scrollTop = progressLog.scrollHeight;
     }
 
     /**

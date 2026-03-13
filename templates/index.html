@@ -45,6 +45,18 @@
                 </form>
 
                 <div class="error-message" id="errorMessage" style="display: none;"></div>
+
+                <!-- Progress log panel (shown during analysis) -->
+                <div class="progress-panel" id="progressPanel" style="display: none;">
+                    <div class="progress-panel-header">
+                        <span class="progress-panel-title">
+                            <span class="spinner-small"></span>
+                            <span id="progressStage">Обработка...</span>
+                        </span>
+                        <span class="progress-elapsed" id="progressElapsed">0 сек</span>
+                    </div>
+                    <div class="progress-log" id="progressLog"></div>
+                </div>
             </div>
 
             <div class="info-section">

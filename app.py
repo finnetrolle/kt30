@@ -3,16 +3,19 @@ Flask backend application for Technical Specification Analyzer.
 """
 import os
 import uuid
+import json
 import logging
+import threading
 from datetime import datetime
 from functools import wraps
-from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file, session
+from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file, session, Response
 from werkzeug.utils import secure_filename
 from config import Config, config as app_config
 from document_parser import parse_document
 from openai_client import analyze_specification
 from excel_export import export_wbs_to_excel, calculate_project_duration_with_parallel, build_dependencies_matrix
 from result_store import get_result_store
+from progress_tracker import get_progress_store
 
 
 # Configure logging
@@ -47,6 +50,7 @@ def create_app(config_class=Config):
     
     # File-based result storage with TTL cleanup
     store = get_result_store()
+    progress_store = get_progress_store()
     
     # Optional authentication middleware
     auth_password = Config.APP_AUTH_PASSWORD
@@ -85,9 +89,98 @@ def create_app(config_class=Config):
         logger.info("Rendering upload page")
         return render_template('index.html')
     
+    def _process_file_background(task_id: str, filepath: str, filename: str, unique_id: str, request_id: str):
+        """Background processing function that runs in a separate thread.
+        
+        Args:
+            task_id: Task ID for progress tracking
+            filepath: Path to the uploaded file
+            filename: Original filename
+            unique_id: Unique ID for result storage
+            request_id: Request ID for logging
+        """
+        tracker = progress_store.get(task_id)
+        
+        try:
+            # Parse the document
+            tracker.stage("📄 Парсинг документа...")
+            logger.info(f"[{request_id}] Starting document parsing...")
+            document_content = parse_document(filepath)
+            text_length = len(document_content['raw_text'])
+            sections_count = len(document_content['structure'].get('sections', []))
+            tables_count = len(document_content.get('tables', []))
+            logger.info(f"[{request_id}] Document parsed successfully:")
+            logger.info(f"[{request_id}]   - Text length: {text_length} characters")
+            logger.info(f"[{request_id}]   - Sections found: {sections_count}")
+            logger.info(f"[{request_id}]   - Tables found: {tables_count}")
+            
+            tracker.info(f"📄 Документ разобран: {text_length} символов, {sections_count} секций, {tables_count} таблиц")
+            
+            # Prepare text for analysis
+            analysis_text = document_content['raw_text']
+            
+            # Add structure information if available
+            if document_content['structure']['sections']:
+                analysis_text += "\n\nСтруктура документа:\n"
+                for section in document_content['structure']['sections']:
+                    indent = "  " * (section['level'] - 1)
+                    analysis_text += f"{indent}{section['title']}\n"
+                    if section['content']:
+                        analysis_text += f"{indent}  {section['content'][:200]}...\n"
+            
+            # Analyze with OpenAI (multi-agent system)
+            tracker.stage("🤖 Запуск мульти-агентного анализа...")
+            logger.info(f"[{request_id}] Starting OpenAI analysis...")
+            logger.info(f"[{request_id}]   - API Base: {Config.OPENAI_API_BASE}")
+            logger.info(f"[{request_id}]   - Model: {Config.OPENAI_MODEL}")
+            
+            result = analyze_specification(analysis_text, request_id=request_id, progress_tracker=tracker)
+            
+            if not result['success']:
+                logger.error(f"[{request_id}] OpenAI analysis failed: {result['error']}")
+                # Clean up uploaded file
+                try:
+                    os.remove(filepath)
+                    logger.info(f"[{request_id}] Cleaned up uploaded file")
+                except Exception as cleanup_error:
+                    logger.warning(f"[{request_id}] Failed to cleanup file: {cleanup_error}")
+                tracker.error(f"Ошибка анализа: {result['error']}")
+                return
+            
+            logger.info(f"[{request_id}] OpenAI analysis completed successfully")
+            if 'usage' in result:
+                logger.info(f"[{request_id}] Token usage: {result['usage']}")
+            
+            # Clean up uploaded file
+            try:
+                os.remove(filepath)
+                logger.info(f"[{request_id}] Cleaned up uploaded file")
+            except Exception as cleanup_error:
+                logger.warning(f"[{request_id}] Failed to cleanup file: {cleanup_error}")
+            
+            # Store result with unique ID
+            result_id = unique_id
+            store.save(result_id, {
+                'filename': filename,
+                'timestamp': datetime.now().isoformat(),
+                'result': result['data'],
+                'usage': result.get('usage', {})
+            })
+            
+            logger.info(f"[{request_id}] Analysis result stored with ID: {result_id}")
+            
+            # Signal completion with redirect URL
+            # We need app context for url_for, so build URL manually
+            redirect_url = f"/results/{result_id}"
+            tracker.complete(redirect_url, result_id)
+            
+        except Exception as e:
+            logger.exception(f"[{request_id}] Unexpected error during background processing: {str(e)}")
+            tracker.error(f"Непредвиденная ошибка: {str(e)}")
+    
     @app.route('/upload', methods=['POST'])
     def upload_file():
-        """Handle file upload and analysis."""
+        """Handle file upload — starts background processing and returns task_id."""
         request_id = str(uuid.uuid4())[:8]
         logger.info(f"[{request_id}] Starting file upload process")
         
@@ -123,78 +216,74 @@ def create_app(config_class=Config):
             file_size = os.path.getsize(filepath)
             logger.info(f"[{request_id}] File saved successfully. Size: {file_size} bytes")
             
-            # Parse the document
-            logger.info(f"[{request_id}] Starting document parsing...")
-            document_content = parse_document(filepath)
-            text_length = len(document_content['raw_text'])
-            sections_count = len(document_content['structure'].get('sections', []))
-            tables_count = len(document_content.get('tables', []))
-            logger.info(f"[{request_id}] Document parsed successfully:")
-            logger.info(f"[{request_id}]   - Text length: {text_length} characters")
-            logger.info(f"[{request_id}]   - Sections found: {sections_count}")
-            logger.info(f"[{request_id}]   - Tables found: {tables_count}")
+            # Create progress tracker
+            task_id = str(uuid.uuid4())[:12]
+            tracker = progress_store.create(task_id)
+            tracker.info(f"📁 Файл «{filename}» загружен ({file_size} байт)")
             
-            # Prepare text for analysis
-            analysis_text = document_content['raw_text']
+            # Start background processing
+            thread = threading.Thread(
+                target=_process_file_background,
+                args=(task_id, filepath, filename, unique_id, request_id),
+                daemon=True
+            )
+            thread.start()
             
-            # Add structure information if available
-            if document_content['structure']['sections']:
-                analysis_text += "\n\nСтруктура документа:\n"
-                for section in document_content['structure']['sections']:
-                    indent = "  " * (section['level'] - 1)
-                    analysis_text += f"{indent}{section['title']}\n"
-                    if section['content']:
-                        analysis_text += f"{indent}  {section['content'][:200]}...\n"
+            logger.info(f"[{request_id}] Background processing started, task_id: {task_id}")
             
-            # Analyze with OpenAI
-            logger.info(f"[{request_id}] Starting OpenAI analysis...")
-            logger.info(f"[{request_id}]   - API Base: {Config.OPENAI_API_BASE}")
-            logger.info(f"[{request_id}]   - Model: {Config.OPENAI_MODEL}")
-            
-            result = analyze_specification(analysis_text, request_id=request_id)
-            
-            if not result['success']:
-                logger.error(f"[{request_id}] OpenAI analysis failed: {result['error']}")
-                # Clean up uploaded file
-                try:
-                    os.remove(filepath)
-                    logger.info(f"[{request_id}] Cleaned up uploaded file")
-                except Exception as cleanup_error:
-                    logger.warning(f"[{request_id}] Failed to cleanup file: {cleanup_error}")
-                return jsonify({'error': result['error']}), 500
-            
-            logger.info(f"[{request_id}] OpenAI analysis completed successfully")
-            if 'usage' in result:
-                logger.info(f"[{request_id}] Token usage: {result['usage']}")
-            
-            # Clean up uploaded file
-            try:
-                os.remove(filepath)
-                logger.info(f"[{request_id}] Cleaned up uploaded file")
-            except Exception as cleanup_error:
-                logger.warning(f"[{request_id}] Failed to cleanup file: {cleanup_error}")
-            
-            # Store result with unique ID
-            result_id = unique_id
-            store.save(result_id, {
-                'filename': filename,
-                'timestamp': datetime.now().isoformat(),
-                'result': result['data'],
-                'usage': result.get('usage', {})
-            })
-            
-            logger.info(f"[{request_id}] Analysis result stored with ID: {result_id}")
-            
-            # Return result ID for redirection
+            # Return task_id for SSE subscription
             return jsonify({
                 'success': True,
-                'result_id': result_id,
-                'redirect_url': url_for('results', result_id=result_id)
+                'task_id': task_id
             })
             
         except Exception as e:
-            logger.exception(f"[{request_id}] Unexpected error during processing: {str(e)}")
+            logger.exception(f"[{request_id}] Unexpected error during upload: {str(e)}")
             return jsonify({'error': str(e)}), 500
+    
+    @app.route('/progress/<task_id>')
+    def progress_stream(task_id):
+        """SSE endpoint for streaming progress events.
+        
+        Args:
+            task_id: Task ID to stream progress for
+        """
+        tracker = progress_store.get(task_id)
+        if not tracker:
+            return jsonify({'error': 'Task not found'}), 404
+        
+        def generate():
+            """Generate SSE events from the progress tracker."""
+            while True:
+                event = tracker.get_event(timeout=30.0)
+                
+                if event is None:
+                    # Send keepalive comment to prevent timeout
+                    yield ": keepalive\n\n"
+                    continue
+                
+                event_data = json.dumps(event, ensure_ascii=False)
+                yield f"event: {event['type']}\ndata: {event_data}\n\n"
+                
+                # If this is a terminal event, stop streaming
+                if event['type'] in ('complete', 'error'):
+                    break
+            
+            # Clean up tracker after a delay
+            # (give client time to process the final event)
+            import time
+            time.sleep(5)
+            progress_store.remove(task_id)
+        
+        return Response(
+            generate(),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no',
+                'Connection': 'keep-alive'
+            }
+        )
     
     @app.route('/results/<result_id>')
     def results(result_id):

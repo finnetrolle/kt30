@@ -34,7 +34,8 @@ class OpenAIClient:
         
         self.client = OpenAI(
             api_key=Config.OPENAI_API_KEY,
-            base_url=Config.OPENAI_API_BASE
+            base_url=Config.OPENAI_API_BASE,
+            timeout=600.0  # 10 min timeout per request for local LLM
         )
         self.model = Config.OPENAI_MODEL
         self.json_mode = Config.OPENAI_JSON_MODE
@@ -278,7 +279,8 @@ JSON:"""
             return False
 
 
-def analyze_specification(document_content: str, request_id: str = None) -> Dict[str, Any]:
+def analyze_specification(document_content: str, request_id: str = None, 
+                          progress_tracker=None) -> Dict[str, Any]:
     """Analyze a technical specification and generate WBS.
     
     This function now uses the multi-agent system for better results.
@@ -286,6 +288,7 @@ def analyze_specification(document_content: str, request_id: str = None) -> Dict
     Args:
         document_content: Content of the technical specification document
         request_id: Optional request ID for logging
+        progress_tracker: Optional ProgressTracker for streaming progress to frontend
         
     Returns:
         Dictionary containing the analysis result
@@ -302,6 +305,11 @@ def analyze_specification(document_content: str, request_id: str = None) -> Dict
             stabilization_mode=StabilizationConfig.MODE,
             estimation_rules_path=StabilizationConfig.ESTIMATION_RULES_PATH
         )
+        
+        # Attach progress tracker if provided
+        if progress_tracker:
+            orchestrator.set_progress_tracker(progress_tracker)
+        
         result = orchestrator.generate_wbs(
             document_content,
             stabilization_mode=StabilizationConfig.MODE

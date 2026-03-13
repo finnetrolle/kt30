@@ -57,6 +57,24 @@ def extract_json_from_response(text: str, log_prefix: str = "") -> Optional[str]
     Returns:
         Extracted JSON string or None if not found
     """
+    # Pre-processing: Strip <think>...</think> blocks (Qwen, DeepSeek reasoning models)
+    # These models wrap their chain-of-thought in <think> tags before the actual response
+    think_pattern = re.compile(r'<think>[\s\S]*?</think>', re.IGNORECASE)
+    cleaned = think_pattern.sub('', text).strip()
+    if cleaned != text:
+        logger.info(f"{log_prefix}Stripped <think> block from response ({len(text)} -> {len(cleaned)} chars)")
+        text = cleaned
+    
+    # Also handle unclosed <think> tags (model didn't close the tag)
+    if re.match(r'^\s*<think>', text, re.IGNORECASE):
+        # Find the first { after <think> that could be the start of JSON
+        # but only if there's no </think> (already handled above)
+        think_open = text.lower().find('<think>')
+        first_brace = text.find('{', think_open)
+        if first_brace != -1:
+            text = text[first_brace:]
+            logger.info(f"{log_prefix}Stripped unclosed <think> prefix")
+    
     # Strategy 1: Try to parse the whole text as JSON
     try:
         json.loads(text)

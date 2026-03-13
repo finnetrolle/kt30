@@ -8,23 +8,34 @@ from typing import Dict, Any, Optional, List
 from openai import OpenAI
 from config import Config
 from json_utils import extract_json_from_response, fix_common_json_errors
+from progress_tracker import ProgressTracker
 
 logger = logging.getLogger(__name__)
 
 
 class AgentEventLogger:
-    """Logger for agent events with structured output."""
+    """Logger for agent events with structured output.
     
-    @staticmethod
-    def log_agent_started(agent_name: str, task: str):
+    Optionally emits events to a ProgressTracker for frontend streaming.
+    """
+    
+    def __init__(self):
+        self._progress: Optional[ProgressTracker] = None
+    
+    def set_progress_tracker(self, tracker: Optional[ProgressTracker]):
+        """Attach a progress tracker for frontend streaming."""
+        self._progress = tracker
+    
+    def log_agent_started(self, agent_name: str, task: str):
         """Log when an agent starts working on a task."""
         logger.info(f"\n{'='*60}")
         logger.info(f"🤖 АГЕНТ НАЧАЛ РАБОТУ: {agent_name}")
         logger.info(f"📋 Задача: {task}")
         logger.info(f"{'='*60}")
+        if self._progress:
+            self._progress.agent(agent_name, f"🤖 {agent_name}: {task}")
     
-    @staticmethod
-    def log_llm_request(agent_name: str, message_preview: str, request_id: str = None):
+    def log_llm_request(self, agent_name: str, message_preview: str, request_id: str = None):
         """Log when an agent sends a request to the LLM."""
         logger.info(f"\n{'─'*60}")
         logger.info(f"📤 [{agent_name}] ОТПРАВКА ЗАПРОСА В LLM")
@@ -33,9 +44,10 @@ class AgentEventLogger:
         logger.info(f"   Сообщение (первые 200 символов):")
         logger.info(f"   {message_preview[:200]}...")
         logger.info(f"{'─'*60}")
+        if self._progress:
+            self._progress.agent(agent_name, f"📤 {agent_name}: отправка запроса в LLM...")
     
-    @staticmethod
-    def log_llm_response(agent_name: str, response_preview: str, elapsed_time: float = None):
+    def log_llm_response(self, agent_name: str, response_preview: str, elapsed_time: float = None):
         """Log when an agent receives a response from the LLM."""
         logger.info(f"\n{'─'*60}")
         logger.info(f"📥 [{agent_name}] ПОЛУЧЕН ОТВЕТ ОТ LLM")
@@ -44,9 +56,11 @@ class AgentEventLogger:
         logger.info(f"   Ответ (первые 300 символов):")
         logger.info(f"   {response_preview[:300]}...")
         logger.info(f"{'─'*60}")
+        if self._progress:
+            time_str = f" ({elapsed_time:.1f} сек)" if elapsed_time else ""
+            self._progress.agent(agent_name, f"📥 {agent_name}: ответ получен{time_str}")
     
-    @staticmethod
-    def log_agent_handoff(from_agent: str, to_agent: str, data_description: str):
+    def log_agent_handoff(self, from_agent: str, to_agent: str, data_description: str):
         """Log when one agent hands off work to another agent."""
         logger.info(f"\n{'*'*60}")
         logger.info(f"🔄 ПЕРЕДАЧА ЗАДАЧИ МЕЖДУ АГЕНТАМИ")
@@ -54,22 +68,26 @@ class AgentEventLogger:
         logger.info(f"   Кому: {to_agent}")
         logger.info(f"   Передаваемые данные: {data_description}")
         logger.info(f"{'*'*60}")
+        if self._progress:
+            self._progress.agent(to_agent, f"🔄 Передача от {from_agent} → {to_agent}")
     
-    @staticmethod
-    def log_agent_completed(agent_name: str, result_summary: str):
+    def log_agent_completed(self, agent_name: str, result_summary: str):
         """Log when an agent completes its task."""
         logger.info(f"\n{'='*60}")
         logger.info(f"✅ АГЕНТ ЗАВЕРШИЛ РАБОТУ: {agent_name}")
         logger.info(f"   Результат: {result_summary}")
         logger.info(f"{'='*60}\n")
+        if self._progress:
+            self._progress.agent(agent_name, f"✅ {agent_name}: {result_summary}")
     
-    @staticmethod
-    def log_agent_error(agent_name: str, error: str):
+    def log_agent_error(self, agent_name: str, error: str):
         """Log when an agent encounters an error."""
         logger.error(f"\n{'!'*60}")
         logger.error(f"❌ ОШИБКА АГЕНТА: {agent_name}")
         logger.error(f"   Ошибка: {error}")
         logger.error(f"{'!'*60}\n")
+        if self._progress:
+            self._progress.agent(agent_name, f"❌ {agent_name}: ошибка — {error}")
 
 
 class BaseAgent:
@@ -86,7 +104,8 @@ class BaseAgent:
         self.role = role
         self.client = OpenAI(
             api_key=Config.OPENAI_API_KEY,
-            base_url=Config.OPENAI_API_BASE
+            base_url=Config.OPENAI_API_BASE,
+            timeout=600.0  # 10 min timeout per request for local LLM
         )
         self.model = Config.OPENAI_MODEL
         self.json_mode = Config.OPENAI_JSON_MODE
@@ -95,6 +114,14 @@ class BaseAgent:
         
         logger.info(f"🤖 Агент '{name}' инициализирован")
         logger.info(f"   Роль: {role}")
+    
+    def set_progress_tracker(self, tracker: Optional[ProgressTracker]):
+        """Attach a progress tracker for frontend streaming.
+        
+        Args:
+            tracker: ProgressTracker instance or None
+        """
+        self.event_logger.set_progress_tracker(tracker)
     
     def _build_system_prompt(self) -> str:
         """Build the system prompt for this agent.
