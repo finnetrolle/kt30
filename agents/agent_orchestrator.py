@@ -6,6 +6,7 @@ Includes stabilization features for consistent results.
 import logging
 import time
 from typing import Dict, Any, Optional, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from .analyst_agent import AnalystAgent
 from .planner_agent import PlannerAgent
 from .validator_agent import ValidatorAgent, ValidationResult
@@ -109,7 +110,66 @@ class AgentOrchestrator:
         self.conversation_log.append(entry)
         logger.info(f"[Orchestrator] {agent_name}: {action}")
     
-    def generate_wbs(self, document_content: str, 
+    def _check_requirements_coverage(self, analysis: Dict[str, Any],
+                                      wbs: Dict[str, Any]) -> Dict[str, Any]:
+        """Check that all functional requirements from analysis are covered by WBS tasks.
+        
+        Args:
+            analysis: Analysis result from Analyst Agent
+            wbs: WBS result from Planner Agent
+            
+        Returns:
+            Coverage report dictionary
+        """
+        # Extract FR names from analysis
+        fr_list = analysis.get("functional_requirements", [])
+        fr_names = [fr.get("name", "").lower().strip() for fr in fr_list if fr.get("name")]
+        
+        if not fr_names:
+            return {"total": 0, "covered_count": 0, "uncovered": []}
+        
+        # Extract all task names from WBS
+        task_names = []
+        wp_names = []
+        for phase in wbs.get("wbs", {}).get("phases", []):
+            for wp in phase.get("work_packages", []):
+                wp_names.append(wp.get("name", "").lower().strip())
+                for task in wp.get("tasks", []):
+                    task_names.append(task.get("name", "").lower().strip())
+        
+        all_wbs_names = " ".join(task_names + wp_names)
+        
+        # Check coverage using keyword matching
+        uncovered = []
+        covered_count = 0
+        
+        for fr in fr_list:
+            fr_name = fr.get("name", "").strip()
+            fr_name_lower = fr_name.lower()
+            
+            # Check if any significant keywords from FR name appear in WBS tasks
+            keywords = [w for w in fr_name_lower.split() if len(w) > 3]
+            
+            if not keywords:
+                covered_count += 1
+                continue
+            
+            # FR is covered if at least half of its keywords appear in WBS
+            matched_keywords = sum(1 for kw in keywords if kw in all_wbs_names)
+            coverage_ratio = matched_keywords / len(keywords) if keywords else 0
+            
+            if coverage_ratio >= 0.5:
+                covered_count += 1
+            else:
+                uncovered.append(fr_name)
+        
+        return {
+            "total": len(fr_list),
+            "covered_count": covered_count,
+            "uncovered": uncovered
+        }
+    
+    def generate_wbs(self, document_content: str,
                      max_iterations: int = 2,
                      stabilization_mode: str = None) -> Dict[str, Any]:
         """Generate WBS using the multi-agent system.
@@ -287,7 +347,48 @@ class AgentOrchestrator:
             iteration += 1
         
         # ============================================================
-        # STEP 5: Validation with Validator Agent (if enabled)
+        # STEP 5: Cross-validation — check FR coverage in WBS
+        # ============================================================
+        coverage_result = self._check_requirements_coverage(analysis, wbs)
+        if coverage_result["uncovered"]:
+            logger.info(f"\n📋 Непокрытые требования: {len(coverage_result['uncovered'])}")
+            for fr in coverage_result["uncovered"]:
+                logger.info(f"   - {fr}")
+            
+            self._log_conversation("Orchestrator", "coverage_check", {
+                "total_requirements": coverage_result["total"],
+                "covered": coverage_result["covered_count"],
+                "uncovered": coverage_result["uncovered"]
+            })
+            
+            # Ask planner to add missing requirements
+            if len(coverage_result["uncovered"]) > 0:
+                missing_list = ", ".join(coverage_result["uncovered"][:10])
+                feedback = (f"В WBS не покрыты следующие функциональные требования из анализа: "
+                          f"{missing_list}. Добавь задачи для этих требований в соответствующие фазы.")
+                
+                self.event_logger.log_agent_started(
+                    self.planner.name,
+                    "Добавление непокрытых требований в WBS"
+                )
+                
+                wbs_result = self.planner.refine_wbs(wbs, feedback)
+                if wbs_result.get("success"):
+                    wbs = wbs_result["wbs"]
+                    self.event_logger.log_agent_completed(
+                        self.planner.name,
+                        f"WBS дополнен задачами для {len(coverage_result['uncovered'])} требований"
+                    )
+        else:
+            logger.info("✅ Все функциональные требования покрыты задачами в WBS")
+            self._log_conversation("Orchestrator", "coverage_check", {
+                "total_requirements": coverage_result["total"],
+                "covered_count": coverage_result["covered_count"],
+                "status": "all_covered"
+            })
+        
+        # ============================================================
+        # STEP 6: Validation with Validator Agent (if enabled)
         # ============================================================
         validation_result = None
         if mode in [StabilizationMode.VALIDATE, StabilizationMode.ENSEMBLE_VALIDATE]:
@@ -313,6 +414,19 @@ class AgentOrchestrator:
                     "corrections": len(validation_result.corrections)
                 })
             
+            # LLM-based semantic validation
+            try:
+                llm_validation = self.validator.validate_with_llm(wbs)
+                if llm_validation.get("success"):
+                    self._log_conversation("Validator", "llm_validation_complete", {
+                        "result": "success"
+                    })
+                    logger.info("✅ LLM-валидация WBS завершена успешно")
+                else:
+                    logger.warning(f"⚠️ LLM-валидация не удалась: {llm_validation.get('error')}")
+            except Exception as e:
+                logger.warning(f"⚠️ LLM-валидация пропущена из-за ошибки: {e}")
+            
             self.event_logger.log_agent_completed(
                 self.validator.name,
                 f"Валидация завершена. Confidence: {validation_result.confidence_score:.2f}"
@@ -330,6 +444,7 @@ class AgentOrchestrator:
         logger.info(f"   Фаз в WBS: {len(wbs.get('wbs', {}).get('phases', []))}")
         if validation_result:
             logger.info(f"   Confidence: {validation_result.confidence_score:.2f}")
+        logger.info(f"   Покрытие FR: {coverage_result['covered_count']}/{coverage_result['total']}")
         logger.info("="*70 + "\n")
         
         result = {
@@ -349,6 +464,11 @@ class AgentOrchestrator:
                 "wbs_summary": {
                     "phases": len(wbs.get('wbs', {}).get('phases', [])),
                     "total_hours": wbs.get('project_info', {}).get('total_estimated_hours', 0)
+                },
+                "requirements_coverage": {
+                    "total": coverage_result["total"],
+                    "covered": coverage_result["covered_count"],
+                    "uncovered": coverage_result["uncovered"]
                 }
             },
             "agent_conversation": self.conversation_log
@@ -365,31 +485,85 @@ class AgentOrchestrator:
         
         return result
     
+    def _run_single_ensemble_iteration(self, document_content: str, 
+                                       max_iterations: int, 
+                                       iteration_num: int) -> Dict[str, Any]:
+        """Run a single ensemble iteration with fresh agents.
+        
+        Each iteration creates its own agents to be thread-safe.
+        
+        Args:
+            document_content: Document to analyze
+            max_iterations: Max refinement iterations
+            iteration_num: Iteration number for logging
+            
+        Returns:
+            Result dictionary
+        """
+        logger.info(f"\n{'='*50}")
+        logger.info(f"📊 ENSEMBLE ITERATION {iteration_num}/{self.ensemble_iterations}")
+        logger.info(f"{'='*50}")
+        
+        # Create fresh agents for thread safety
+        analyst = AnalystAgent()
+        planner = PlannerAgent()
+        
+        # Step 1: Analyst
+        analysis_result = analyst.analyze_specification(document_content)
+        if not analysis_result.get("success"):
+            return analysis_result
+        
+        analysis = analysis_result["analysis"]
+        
+        # Step 2: Planner
+        wbs_result = planner.create_wbs(analysis)
+        if not wbs_result.get("success"):
+            return wbs_result
+        
+        wbs = wbs_result["wbs"]
+        
+        # Step 3: Validate and refine
+        validation = planner.validate_wbs(wbs)
+        iteration = 0
+        while not validation["valid"] and iteration < max_iterations:
+            feedback = f"Fix: {', '.join(validation['issues'])}"
+            wbs_result = planner.refine_wbs(wbs, feedback)
+            if wbs_result.get("success"):
+                wbs = wbs_result["wbs"]
+                validation = planner.validate_wbs(wbs)
+            iteration += 1
+        
+        return {"success": True, "data": wbs}
+    
     def _generate_with_ensemble(self, document_content: str, max_iterations: int,
                                 mode: str, start_time: float) -> Dict[str, Any]:
-        """Generate WBS with ensemble stabilization."""
+        """Generate WBS with ensemble stabilization using parallel execution."""
         
-        logger.info(f"\n🎭 Режим ENSEMBLE: запуск {self.ensemble_iterations} итераций")
+        logger.info(f"\n🎭 ENSEMBLE mode: launching {self.ensemble_iterations} parallel iterations")
         
         results = []
         
-        for i in range(self.ensemble_iterations):
-            logger.info(f"\n{'='*50}")
-            logger.info(f"📊 ENSEMBLE ИТЕРАЦИЯ {i + 1}/{self.ensemble_iterations}")
-            logger.info(f"{'='*50}")
+        # Run iterations in parallel using ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(self.ensemble_iterations, 5)) as executor:
+            futures = {
+                executor.submit(
+                    self._run_single_ensemble_iteration, 
+                    document_content, max_iterations, i + 1
+                ): i + 1
+                for i in range(self.ensemble_iterations)
+            }
             
-            # Reset agents for fresh generation
-            self.analyst.reset_conversation()
-            self.planner.reset_conversation()
-            
-            # Generate single WBS
-            result = self._generate_single_iteration(document_content, max_iterations)
-            
-            if result.get("success"):
-                results.append(result["data"])
-                logger.info(f"   ✅ Итерация {i + 1} завершена успешно")
-            else:
-                logger.warning(f"   ⚠️ Итерация {i + 1} завершилась с ошибкой: {result.get('error')}")
+            for future in as_completed(futures):
+                iteration_num = futures[future]
+                try:
+                    result = future.result()
+                    if result.get("success"):
+                        results.append(result["data"])
+                        logger.info(f"   ✅ Iteration {iteration_num} completed successfully")
+                    else:
+                        logger.warning(f"   ⚠️ Iteration {iteration_num} failed: {result.get('error')}")
+                except Exception as e:
+                    logger.error(f"   ❌ Iteration {iteration_num} raised exception: {e}")
         
         if not results:
             return {

@@ -260,24 +260,56 @@ class ResultStabilizer:
     
     def _consensus_phases(self, wbs_results: List[Dict[str, Any]], 
                          method: str) -> List[Dict[str, Any]]:
-        """Calculate consensus for phases."""
+        """Calculate consensus for phases.
+        
+        Matches phases by ID or name instead of index to handle
+        cases where LLM returns phases in different order.
+        """
         import copy
         
-        # Get phase structure from first result
+        # Get phase structure from first result as template
         template_phases = wbs_results[0].get('wbs', {}).get('phases', [])
         consensus_phases = []
         
-        for i, template_phase in enumerate(template_phases):
+        for template_phase in template_phases:
             consensus_phase = copy.deepcopy(template_phase)
+            phase_id = template_phase.get('id', '')
+            phase_name = template_phase.get('name', '').lower()
             
-            # Collect hours for this phase across all results
+            # Collect hours for this phase across all results, matching by ID or name
             phase_hours = []
+            matched_phases_by_result = []
+            
             for wbs in wbs_results:
                 phases = wbs.get('wbs', {}).get('phases', [])
-                if i < len(phases):
-                    hours = phases[i].get('estimated_hours', 0)
+                matched_phase = None
+                
+                # First try to match by ID
+                for p in phases:
+                    if p.get('id', '') == phase_id:
+                        matched_phase = p
+                        break
+                
+                # Fallback: match by name similarity
+                if matched_phase is None and phase_name:
+                    for p in phases:
+                        if p.get('name', '').lower() == phase_name:
+                            matched_phase = p
+                            break
+                
+                # Last fallback: partial name match
+                if matched_phase is None and phase_name:
+                    for p in phases:
+                        p_name = p.get('name', '').lower()
+                        if phase_name in p_name or p_name in phase_name:
+                            matched_phase = p
+                            break
+                
+                if matched_phase:
+                    hours = matched_phase.get('estimated_hours', 0)
                     if hours > 0:
                         phase_hours.append(hours)
+                    matched_phases_by_result.append(matched_phase)
             
             if phase_hours:
                 if method == 'median':
@@ -290,43 +322,69 @@ class ResultStabilizer:
             days = max(1, round(hours / 8))
             consensus_phase['duration'] = f"{days} дней"
             
-            # Consensus for work packages
-            if 'work_packages' in consensus_phase:
-                consensus_phase['work_packages'] = self._consensus_work_packages(
-                    wbs_results, i, method
+            # Consensus for work packages using matched phases
+            if 'work_packages' in consensus_phase and matched_phases_by_result:
+                consensus_phase['work_packages'] = self._consensus_work_packages_by_match(
+                    matched_phases_by_result, method
                 )
             
             consensus_phases.append(consensus_phase)
         
         return consensus_phases
     
-    def _consensus_work_packages(self, wbs_results: List[Dict[str, Any]], 
-                                 phase_idx: int, method: str) -> List[Dict[str, Any]]:
-        """Calculate consensus for work packages in a phase."""
+    def _consensus_work_packages_by_match(self, matched_phases: List[Dict[str, Any]], 
+                                          method: str) -> List[Dict[str, Any]]:
+        """Calculate consensus for work packages using matched phases.
+        
+        Matches work packages by ID or name instead of index.
+        
+        Args:
+            matched_phases: List of phase dicts that were matched across results
+            method: Consensus method
+            
+        Returns:
+            List of consensus work packages
+        """
         import copy
         
-        # Get template work packages
-        template_wps = (
-            wbs_results[0]
-            .get('wbs', {}).get('phases', [])[phase_idx]
-            .get('work_packages', [])
-        )
+        if not matched_phases:
+            return []
         
+        # Use first matched phase as template
+        template_wps = matched_phases[0].get('work_packages', [])
         consensus_wps = []
         
-        for j, template_wp in enumerate(template_wps):
+        for template_wp in template_wps:
             consensus_wp = copy.deepcopy(template_wp)
+            wp_id = template_wp.get('id', '')
+            wp_name = template_wp.get('name', '').lower()
             
-            # Collect hours for this work package
+            # Collect hours for this work package across all matched phases
             wp_hours = []
-            for wbs in wbs_results:
-                phases = wbs.get('wbs', {}).get('phases', [])
-                if phase_idx < len(phases):
-                    wps = phases[phase_idx].get('work_packages', [])
-                    if j < len(wps):
-                        hours = wps[j].get('estimated_hours', 0)
-                        if hours > 0:
-                            wp_hours.append(hours)
+            matched_wps = []
+            
+            for phase in matched_phases:
+                wps = phase.get('work_packages', [])
+                matched_wp = None
+                
+                # Match by ID first
+                for wp in wps:
+                    if wp.get('id', '') == wp_id:
+                        matched_wp = wp
+                        break
+                
+                # Fallback: match by name
+                if matched_wp is None and wp_name:
+                    for wp in wps:
+                        if wp.get('name', '').lower() == wp_name:
+                            matched_wp = wp
+                            break
+                
+                if matched_wp:
+                    hours = matched_wp.get('estimated_hours', 0)
+                    if hours > 0:
+                        wp_hours.append(hours)
+                    matched_wps.append(matched_wp)
             
             if wp_hours:
                 if method == 'median':
@@ -334,49 +392,67 @@ class ResultStabilizer:
                 else:
                     consensus_wp['estimated_hours'] = round(statistics.mean(wp_hours))
             
-            # Consensus for tasks
-            if 'tasks' in consensus_wp:
-                consensus_wp['tasks'] = self._consensus_tasks(
-                    wbs_results, phase_idx, j, method
+            # Consensus for tasks using matched work packages
+            if 'tasks' in consensus_wp and matched_wps:
+                consensus_wp['tasks'] = self._consensus_tasks_by_match(
+                    matched_wps, method
                 )
             
             consensus_wps.append(consensus_wp)
         
         return consensus_wps
     
-    def _consensus_tasks(self, wbs_results: List[Dict[str, Any]], 
-                        phase_idx: int, wp_idx: int, 
-                        method: str) -> List[Dict[str, Any]]:
-        """Calculate consensus for tasks in a work package."""
+    def _consensus_tasks_by_match(self, matched_wps: List[Dict[str, Any]], 
+                                   method: str) -> List[Dict[str, Any]]:
+        """Calculate consensus for tasks using matched work packages.
+        
+        Matches tasks by ID or name instead of index.
+        
+        Args:
+            matched_wps: List of work package dicts matched across results
+            method: Consensus method
+            
+        Returns:
+            List of consensus tasks
+        """
         import copy
         
-        # Get template tasks
-        template_tasks = (
-            wbs_results[0]
-            .get('wbs', {}).get('phases', [])[phase_idx]
-            .get('work_packages', [])[wp_idx]
-            .get('tasks', [])
-        )
+        if not matched_wps:
+            return []
         
+        # Use first matched WP as template
+        template_tasks = matched_wps[0].get('tasks', [])
         consensus_tasks = []
         
-        for k, template_task in enumerate(template_tasks):
+        for template_task in template_tasks:
             consensus_task = copy.deepcopy(template_task)
+            task_id = template_task.get('id', '')
+            task_name = template_task.get('name', '').lower()
             
-            # Collect hours for this task
+            # Collect hours for this task across all matched WPs
             task_hours = []
-            for wbs in wbs_results:
-                try:
-                    hours = (
-                        wbs.get('wbs', {}).get('phases', [])[phase_idx]
-                        .get('work_packages', [])[wp_idx]
-                        .get('tasks', [])[k]
-                        .get('estimated_hours', 0)
-                    )
+            
+            for wp in matched_wps:
+                tasks = wp.get('tasks', [])
+                matched_task = None
+                
+                # Match by ID first
+                for t in tasks:
+                    if t.get('id', '') == task_id:
+                        matched_task = t
+                        break
+                
+                # Fallback: match by name
+                if matched_task is None and task_name:
+                    for t in tasks:
+                        if t.get('name', '').lower() == task_name:
+                            matched_task = t
+                            break
+                
+                if matched_task:
+                    hours = matched_task.get('estimated_hours', 0)
                     if hours > 0:
                         task_hours.append(hours)
-                except (IndexError, KeyError):
-                    pass
             
             if task_hours:
                 if method == 'median':
@@ -385,45 +461,86 @@ class ResultStabilizer:
                     consensus_task['estimated_hours'] = round(statistics.mean(task_hours))
             
             # Normalize task hours
-            task_name = consensus_task.get('name', '')
+            task_name_orig = consensus_task.get('name', '')
             consensus_task['estimated_hours'] = self.rules.normalize_hours(
-                consensus_task.get('estimated_hours', 0), task_name
+                consensus_task.get('estimated_hours', 0), task_name_orig
             )
             
             consensus_tasks.append(consensus_task)
         
         return consensus_tasks
     
+    @staticmethod
+    def _coerce_to_number(value, default: float = 0) -> float:
+        """Coerce a value to a number, handling string inputs from LLM."""
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            import re
+            match = re.search(r'[\d.]+', value)
+            if match:
+                try:
+                    return float(match.group())
+                except ValueError:
+                    pass
+        return default
+    
     def _normalize_wbs(self, wbs: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize WBS values according to rules."""
+        """Normalize WBS values according to rules with bottom-up recalculation."""
         import copy
+        import math
         normalized = copy.deepcopy(wbs)
         
         limits = self.rules.rules.get("limits", {})
         min_task = limits.get("min_hours_per_task", 2)
         max_task = limits.get("max_hours_per_task", 80)
+        min_phase = limits.get("min_hours_per_phase", 8)
+        max_phase = limits.get("max_hours_per_phase", 500)
         
-        # Normalize phases
+        # Normalize phases with bottom-up recalculation
+        total_hours = 0
         if 'wbs' in normalized and 'phases' in normalized['wbs']:
             for phase in normalized['wbs']['phases']:
+                phase_hours_sum = 0
+                
                 # Normalize work packages
                 for wp in phase.get('work_packages', []):
-                    wp_hours = wp.get('estimated_hours', 0)
-                    wp['estimated_hours'] = max(min_task, wp_hours)
+                    wp_hours_sum = 0
                     
-                    # Normalize tasks
+                    # Normalize tasks (bottom level)
                     for task in wp.get('tasks', []):
-                        task_hours = task.get('estimated_hours', 0)
+                        task_hours = self._coerce_to_number(task.get('estimated_hours', 0))
                         task_name = task.get('name', '')
-                        task['estimated_hours'] = self.rules.normalize_hours(task_hours, task_name)
-        
-        # Recalculate total
-        total_hours = 0
-        for phase in normalized.get('wbs', {}).get('phases', []):
-            total_hours += phase.get('estimated_hours', 0)
+                        task_hours = self.rules.normalize_hours(task_hours, task_name)
+                        task['estimated_hours'] = round(task_hours)
+                        task['duration_days'] = math.ceil(task_hours / 8)
+                        wp_hours_sum += task_hours
+                    
+                    # Bottom-up: WP hours = sum of task hours
+                    if wp.get('tasks'):
+                        wp['estimated_hours'] = round(wp_hours_sum)
+                    else:
+                        wp_hours = self._coerce_to_number(wp.get('estimated_hours', 0))
+                        wp['estimated_hours'] = round(max(min_task, wp_hours))
+                    
+                    wp['duration_days'] = math.ceil(wp['estimated_hours'] / 8)
+                    phase_hours_sum += wp['estimated_hours']
+                
+                # Bottom-up: phase hours = sum of WP hours
+                if phase.get('work_packages'):
+                    phase_hours = phase_hours_sum
+                else:
+                    phase_hours = self._coerce_to_number(phase.get('estimated_hours', 0))
+                
+                phase_hours = max(min_phase, min(max_phase, phase_hours))
+                phase['estimated_hours'] = round(phase_hours)
+                phase_days = math.ceil(phase_hours / 8)
+                phase['duration'] = f"{phase_days} дней"
+                
+                total_hours += phase['estimated_hours']
         
         if 'project_info' in normalized:
-            normalized['project_info']['total_estimated_hours'] = total_hours
+            normalized['project_info']['total_estimated_hours'] = round(total_hours)
             weeks = max(1, round(total_hours / 40))
             normalized['project_info']['estimated_duration'] = f"{weeks} недель"
         

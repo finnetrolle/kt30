@@ -5,10 +5,10 @@ import json
 import os
 import logging
 import time
-import re
 from typing import Optional, Dict, Any
 from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
 from config import Config
+from json_utils import extract_json_from_response
 
 
 logger = logging.getLogger(__name__)
@@ -99,7 +99,7 @@ class OpenAIClient:
             User prompt string
         """
         # Truncate document if too long
-        max_chars = 8000
+        max_chars = 40000
         if len(document_content) > max_chars:
             document_content = document_content[:max_chars] + "\n... (документ обрезан)"
             logger.warning(f"Document truncated to {max_chars} characters")
@@ -116,6 +116,8 @@ JSON:"""
     def _extract_json_from_response(self, text: str, log_prefix: str = "") -> str:
         """Extract JSON from response that might contain markdown or other text.
         
+        Delegates to shared json_utils module.
+        
         Args:
             text: Raw response text
             log_prefix: Prefix for logging
@@ -125,61 +127,7 @@ JSON:"""
         """
         logger.info(f"{log_prefix}Attempting to extract JSON from response...")
         logger.debug(f"{log_prefix}Response starts with: {text[:300]}...")
-        
-        # Method 1: Try to parse the whole text as JSON
-        try:
-            json.loads(text)
-            logger.info(f"{log_prefix}Entire response is valid JSON")
-            return text
-        except json.JSONDecodeError:
-            pass
-        
-        # Method 2: Find JSON in markdown code blocks
-        json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
-        if json_match:
-            extracted = json_match.group(1).strip()
-            logger.info(f"{log_prefix}Found JSON in markdown code block")
-            return extracted
-        
-        # Method 3: Find all JSON objects and try each
-        # Look for complete JSON objects
-        brace_count = 0
-        json_start = -1
-        candidates = []
-        
-        for i, char in enumerate(text):
-            if char == '{':
-                if brace_count == 0:
-                    json_start = i
-                brace_count += 1
-            elif char == '}':
-                brace_count -= 1
-                if brace_count == 0 and json_start != -1:
-                    candidates.append(text[json_start:i+1])
-                    json_start = -1
-        
-        # Try each candidate, starting from the largest (usually the main response)
-        candidates.sort(key=len, reverse=True)
-        
-        for candidate in candidates:
-            try:
-                json.loads(candidate)
-                logger.info(f"{log_prefix}Found valid JSON object ({len(candidate)} chars)")
-                return candidate
-            except json.JSONDecodeError:
-                continue
-        
-        # Method 4: Last resort - find first { and last }
-        first_brace = text.find('{')
-        last_brace = text.rfind('}')
-        
-        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-            extracted = text[first_brace:last_brace + 1]
-            logger.info(f"{log_prefix}Extracted text between first and last brace")
-            return extracted
-        
-        logger.error(f"{log_prefix}Could not extract JSON from response")
-        return None
+        return extract_json_from_response(text, log_prefix=log_prefix)
 
     def analyze_document(self, document_content: str, request_id: str = None) -> Dict[str, Any]:
         """Analyze a technical specification document and generate WBS.
@@ -213,7 +161,7 @@ JSON:"""
                     {"role": "user", "content": user_prompt}
                 ],
                 "temperature": 0.1,  # Very low temperature for consistent JSON
-                "max_tokens": 8000   # Increased token limit
+                "max_tokens": 16000  # Increased token limit for large WBS
             }
             
             # Only add response_format for OpenAI API
@@ -390,15 +338,4 @@ def analyze_specification(document_content: str, request_id: str = None) -> Dict
         return client.analyze_document(document_content, request_id=request_id)
 
 
-def analyze_specification_single_agent(document_content: str, request_id: str = None) -> Dict[str, Any]:
-    """Analyze using the original single-agent approach (for comparison).
-    
-    Args:
-        document_content: Content of the technical specification document
-        request_id: Optional request ID for logging
-        
-    Returns:
-        Dictionary containing the analysis result
-    """
-    client = OpenAIClient()
-    return client.analyze_document(document_content, request_id=request_id)
+

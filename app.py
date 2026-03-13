@@ -5,12 +5,14 @@ import os
 import uuid
 import logging
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file
+from functools import wraps
+from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file, session
 from werkzeug.utils import secure_filename
 from config import Config, config as app_config
 from document_parser import parse_document
 from openai_client import analyze_specification
 from excel_export import export_wbs_to_excel, calculate_project_duration_with_parallel, build_dependencies_matrix
+from result_store import get_result_store
 
 
 # Configure logging
@@ -43,8 +45,39 @@ def create_app(config_class=Config):
     config_class.init_app()
     logger.info("Configuration initialized")
     
-    # Store analysis results in memory (in production, use a database)
-    analysis_results = {}
+    # File-based result storage with TTL cleanup
+    store = get_result_store()
+    
+    # Optional authentication middleware
+    auth_password = Config.APP_AUTH_PASSWORD
+    if auth_password:
+        logger.info("Authentication is ENABLED (APP_AUTH_PASSWORD is set)")
+        
+        @app.before_request
+        def check_auth():
+            """Check authentication for all routes except health and login."""
+            # Skip auth for health check and static files
+            if request.endpoint in ('health', 'login', 'static'):
+                return None
+            
+            if not session.get('authenticated'):
+                if request.endpoint == 'index':
+                    return render_template('login.html')
+                return jsonify({'error': 'Authentication required'}), 401
+        
+        @app.route('/login', methods=['POST'])
+        def login():
+            """Handle login."""
+            password = request.form.get('password', '')
+            if password == auth_password:
+                session['authenticated'] = True
+                logger.info("User authenticated successfully")
+                return redirect(url_for('index'))
+            else:
+                logger.warning("Failed authentication attempt")
+                return render_template('login.html', error='Неверный пароль'), 401
+    else:
+        logger.info("Authentication is DISABLED (APP_AUTH_PASSWORD not set)")
     
     @app.route('/')
     def index():
@@ -74,7 +107,7 @@ def create_app(config_class=Config):
         # Check file extension
         if not Config.allowed_file(file.filename):
             logger.warning(f"[{request_id}] Invalid file type: {file.filename}")
-            return jsonify({'error': 'Invalid file type. Please upload a .doc or .docx file'}), 400
+            return jsonify({'error': 'Invalid file type. Please upload a .docx or .pdf file'}), 400
         
         try:
             # Generate unique filename
@@ -143,12 +176,12 @@ def create_app(config_class=Config):
             
             # Store result with unique ID
             result_id = unique_id
-            analysis_results[result_id] = {
+            store.save(result_id, {
                 'filename': filename,
                 'timestamp': datetime.now().isoformat(),
                 'result': result['data'],
                 'usage': result.get('usage', {})
-            }
+            })
             
             logger.info(f"[{request_id}] Analysis result stored with ID: {result_id}")
             
@@ -167,7 +200,7 @@ def create_app(config_class=Config):
     def results(result_id):
         """Display the analysis results."""
         logger.info(f"Rendering results page for ID: {result_id}")
-        result_data = analysis_results.get(result_id)
+        result_data = store.get(result_id)
         
         if not result_data:
             logger.warning(f"Result not found for ID: {result_id}")
@@ -203,7 +236,7 @@ def create_app(config_class=Config):
     def api_results(result_id):
         """API endpoint to get results as JSON."""
         logger.info(f"API request for results ID: {result_id}")
-        result_data = analysis_results.get(result_id)
+        result_data = store.get(result_id)
         
         if not result_data:
             logger.warning(f"API: Result not found for ID: {result_id}")
@@ -215,7 +248,7 @@ def create_app(config_class=Config):
     def export_excel(result_id):
         """Export WBS results as Excel file."""
         logger.info(f"Excel export request for results ID: {result_id}")
-        result_data = analysis_results.get(result_id)
+        result_data = store.get(result_id)
         
         if not result_data:
             logger.warning(f"Excel export: Result not found for ID: {result_id}")

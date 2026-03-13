@@ -51,6 +51,9 @@ class Config:
     SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
     
+    # Authentication (optional — set APP_AUTH_PASSWORD to enable)
+    APP_AUTH_PASSWORD = os.getenv('APP_AUTH_PASSWORD', '')
+    
     # OpenAI API configuration
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
     OPENAI_API_BASE = os.getenv('OPENAI_API_BASE', 'https://api.openai.com/v1')
@@ -63,7 +66,8 @@ class Config:
     # File upload configuration
     UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'uploads')
     MAX_CONTENT_LENGTH = int(os.getenv('MAX_CONTENT_LENGTH', 16 * 1024 * 1024))  # 16MB default
-    ALLOWED_EXTENSIONS = {'doc', 'docx', 'pdf'}
+    # Note: .doc (legacy Word format) is NOT supported by python-docx, only .docx
+    ALLOWED_EXTENSIONS = {'docx', 'pdf'}
     
     # WBS template configuration
     WBS_TEMPLATE_PATH = os.getenv('WBS_TEMPLATE_PATH', 'wbs_template.md')

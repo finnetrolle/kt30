@@ -65,11 +65,11 @@ document.addEventListener('DOMContentLoaded', function() {
      */
     function handleFileSelection(file) {
         // Validate file extension
-        const allowedExtensions = ['doc', 'docx', 'pdf'];
+        const allowedExtensions = ['docx', 'pdf'];
         const fileExtension = file.name.split('.').pop().toLowerCase();
         
         if (!allowedExtensions.includes(fileExtension)) {
-            showError('Неверный формат файла. Пожалуйста, загрузите файл .doc, .docx или .pdf');
+            showError('Неверный формат файла. Пожалуйста, загрузите файл .docx или .pdf');
             clearFileSelection();
             return;
         }

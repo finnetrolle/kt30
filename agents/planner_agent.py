@@ -2,7 +2,9 @@
 WBS Planner Agent.
 Creates Work Breakdown Structure based on analysis from the Analyst Agent.
 """
+import json
 import logging
+from pathlib import Path
 from typing import Dict, Any, List
 from .base_agent import BaseAgent
 
@@ -15,7 +17,7 @@ class PlannerAgent(BaseAgent):
     This agent:
     - Receives structured analysis from the Analyst Agent
     - Creates detailed WBS with phases, work packages, and tasks
-    - Estimates effort for each work item
+    - Estimates effort for each work item using estimation rules
     - Assigns required skills/roles to tasks
     - Identifies dependencies between tasks
     """
@@ -26,6 +28,65 @@ class PlannerAgent(BaseAgent):
             name="Планировщик WBS",
             role="Создает детальную структуру работ (WBS) на основе анализа требований"
         )
+        self._estimation_rules = self._load_estimation_rules()
+    
+    def _load_estimation_rules(self) -> Dict[str, Any]:
+        """Load estimation rules from JSON file.
+        
+        Returns:
+            Estimation rules dictionary
+        """
+        rules_path = Path(__file__).parent.parent / "data" / "estimation_rules.json"
+        try:
+            with open(rules_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.warning(f"Could not load estimation rules: {e}")
+            return {}
+    
+    def _build_estimation_reference(self) -> str:
+        """Build a compact estimation reference from rules for the prompt.
+        
+        Returns:
+            Formatted estimation reference string
+        """
+        rules = self._estimation_rules
+        if not rules:
+            return ""
+        
+        lines = ["\n\nСПРАВОЧНИК ТИПОВЫХ ТРУДОЗАТРАТ (используй для оценки):"]
+        
+        # Task templates
+        templates = rules.get("task_templates", {})
+        for category, tasks in templates.items():
+            lines.append(f"\n{category}:")
+            for task_name, est in tasks.items():
+                lines.append(f"  - {task_name}: {est['min_hours']}-{est['max_hours']} ч (типично {est['typical_hours']} ч)")
+        
+        # Phase ratios
+        phase_ratios = rules.get("phase_ratios", {})
+        if phase_ratios:
+            lines.append("\nРАСПРЕДЕЛЕНИЕ ТРУДОЗАТРАТ ПО ФАЗАМ:")
+            for phase_name, info in phase_ratios.items():
+                ratio = info.get("ratio", 0)
+                lines.append(f"  - {phase_name}: {int(ratio*100)}% от общего объёма")
+        
+        # Project type baselines
+        baselines = rules.get("project_type_baselines", {})
+        if baselines:
+            lines.append("\nБАЗОВЫЕ ОЦЕНКИ ПО ТИПАМ ПРОЕКТОВ:")
+            for proj_type, info in baselines.items():
+                rng = info.get("range_hours", [0, 0])
+                lines.append(f"  - {proj_type}: {rng[0]}-{rng[1]} ч (базово {info.get('baseline_hours', 0)} ч)")
+        
+        # Limits
+        limits = rules.get("limits", {})
+        if limits:
+            lines.append(f"\nЛИМИТЫ: задача {limits.get('min_hours_per_task', 2)}-{limits.get('max_hours_per_task', 80)} ч, "
+                        f"фаза {limits.get('min_hours_per_phase', 8)}-{limits.get('max_hours_per_phase', 500)} ч, "
+                        f"проект {limits.get('min_total_hours', 40)}-{limits.get('max_total_hours', 5000)} ч")
+        
+        return "\n".join(lines)
     
     def _build_system_prompt(self) -> str:
         """Build the system prompt for the Planner Agent.
@@ -33,7 +94,9 @@ class PlannerAgent(BaseAgent):
         Returns:
             System prompt string
         """
-        return """Ты — опытный проектный менеджер и планировщик проектов разработки ПО. Твоя задача — создавать детальные Work Breakdown Structure (WBS) на основе анализа требований.
+        estimation_ref = self._build_estimation_reference()
+        
+        return f"""Ты — опытный проектный менеджер и планировщик проектов разработки ПО. Твоя задача — создавать детальные Work Breakdown Structure (WBS) на основе анализа требований.
 
 ОТВЕТ ДОЛЖЕН БЫТЬ ТОЛЬКО В ФОРМАТЕ JSON. НЕ ПИШИ НИЧЕГО КРОМЕ JSON. ВАЖНО: все строки должны быть валидными, без переносов внутри строк.
 
@@ -44,7 +107,7 @@ class PlannerAgent(BaseAgent):
    - description: описание (краткое)
    - estimated_duration: общая длительность
    - complexity_level: уровень сложности
-   - total_estimated_hours: общая оценка трудозатрат
+   - total_estimated_hours: общая оценка трудозатрат (ЧИСЛО, сумма часов всех фаз)
 
 2. wbs — структура работ:
    - phases: массив фаз проекта
@@ -54,15 +117,15 @@ class PlannerAgent(BaseAgent):
    - name: название фазы
    - description: описание фазы
    - duration: длительность фазы в днях (число)
-   - estimated_hours: оценка трудозатрат в часах
+   - estimated_hours: оценка трудозатрат в часах (ЧИСЛО)
    - work_packages: массив пакетов работ
    
    Каждый пакет работ (work_package) содержит:
    - id: идентификатор ("1.1", "1.2")
    - name: название пакета
    - description: описание
-   - estimated_hours: оценка трудозатрат
-   - duration_days: длительность в рабочих днях
+   - estimated_hours: оценка трудозатрат (ЧИСЛО)
+   - duration_days: длительность в рабочих днях (ЧИСЛО)
    - dependencies: массив идентификаторов (пустой массив если нет)
    - can_start_parallel: true или false
    - deliverables: массив результатов
@@ -73,14 +136,14 @@ class PlannerAgent(BaseAgent):
    - id: идентификатор ("1.1.1", "1.1.2")
    - name: название задачи
    - description: описание
-   - estimated_hours: оценка трудозатрат
-   - duration_days: длительность в рабочих днях
+   - estimated_hours: оценка трудозатрат (ЧИСЛО)
+   - duration_days: длительность в рабочих днях (ЧИСЛО)
    - status: "pending"
    - skills_required: массив требуемых навыков
    - dependencies: массив идентификаторов (пустой массив если нет)
    - can_start_parallel: true или false
 
-3. risks — риски проекта (максимум5 рисков):
+3. risks — риски проекта (максимум 5 рисков):
    - id: идентификатор
    - description: описание риска
    - probability: вероятность
@@ -89,7 +152,7 @@ class PlannerAgent(BaseAgent):
 
 4. assumptions — предположения при планировании (массив строк)
 
-5. recommendations — рекомендации по проекту (максимум5):
+5. recommendations — рекомендации по проекту (максимум 5):
    - category: категория
    - priority: приоритет
    - recommendation: текст рекомендации
@@ -102,12 +165,18 @@ class PlannerAgent(BaseAgent):
 5. Развертывание
 
 ВАЖНО:
-- Все description должны быть краткими (одно предложение)
-- duration_days = estimated_hours /8 (округлить вверх)
+- ВСЕ estimated_hours и duration_days должны быть ЧИСЛАМИ (не строками)
+- total_estimated_hours = сумма estimated_hours всех фаз
+- estimated_hours фазы = сумма estimated_hours всех work_packages в фазе
+- estimated_hours work_package = сумма estimated_hours всех tasks в work_package
+- duration_days = estimated_hours / 8 (округлить вверх)
 - can_start_parallel = true если задача может выполняться одновременно с другими
 - dependencies = [] если нет зависимостей
+- Все description должны быть краткими (одно предложение)
 - Соблюдай валидный JSON синтаксис
-- Не используй переносы строк внутри строковых значений"""
+- Не используй переносы строк внутри строковых значений
+- Используй справочник трудозатрат ниже для реалистичных оценок
+{estimation_ref}"""
 
     def create_wbs(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Create WBS based on the analysis from Analyst Agent.

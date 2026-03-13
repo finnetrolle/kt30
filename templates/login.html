@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Вход - Анализатор ТЗ</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>🔒 Вход в систему</h1>
+            <p class="subtitle">Анализатор технических заданий</p>
+        </header>
+
+        <main class="main-content">
+            <div class="upload-section">
+                <form method="POST" action="{{ url_for('login') }}" class="upload-form">
+                    <div class="file-input-wrapper">
+                        <label for="password" style="display: block; margin-bottom: 10px; font-weight: bold;">Пароль:</label>
+                        <input type="password" 
+                               id="password" 
+                               name="password" 
+                               placeholder="Введите пароль"
+                               required
+                               autofocus
+                               style="width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 16px; box-sizing: border-box;">
+                    </div>
+                    
+                    {% if error %}
+                    <div class="error-message" style="display: block; margin-top: 10px;">{{ error }}</div>
+                    {% endif %}
+
+                    <button type="submit" class="submit-btn" style="margin-top: 15px;">
+                        <span class="btn-text">Войти</span>
+                    </button>
+                </form>
+            </div>
+        </main>
+
+        <footer class="footer">
+            <p>© 2024 Technical Specification Analyzer</p>
+        </footer>
+    </div>
+</body>
+</html>

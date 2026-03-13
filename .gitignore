@@ -15,6 +15,9 @@ env/
 # Uploads folder
 uploads/
 
+# Results storage
+results_data/
+
 # IDE
 .idea/
 .vscode/

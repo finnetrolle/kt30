@@ -5,54 +5,66 @@ Validates and normalizes WBS results for consistency and realism.
 import logging
 import json
 import statistics
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 from .base_agent import BaseAgent
 
 logger = logging.getLogger(__name__)
 
 
-# Standard estimation rules for common tasks (in hours)
-ESTIMATION_RULES = {
-    "task_templates": {
-        "Авторизация": {"min_hours": 8, "max_hours": 24, "typical_hours": 16},
-        "Регистрация": {"min_hours": 6, "max_hours": 16, "typical_hours": 10},
-        "Логин": {"min_hours": 4, "max_hours": 8, "typical_hours": 6},
-        "CRUD операции": {"min_hours": 4, "max_hours": 16, "typical_hours": 8},
-        "API endpoint": {"min_hours": 2, "max_hours": 8, "typical_hours": 4},
-        "Форма": {"min_hours": 4, "max_hours": 16, "typical_hours": 8},
-        "Страница": {"min_hours": 4, "max_hours": 16, "typical_hours": 8},
-        "Отчет": {"min_hours": 8, "max_hours": 24, "typical_hours": 16},
-        "Дашборд": {"min_hours": 16, "max_hours": 40, "typical_hours": 24},
-        "Интеграция": {"min_hours": 16, "max_hours": 80, "typical_hours": 32},
-        "Тестирование": {"min_hours": 4, "max_hours": 16, "typical_hours": 8},
-        "Документация": {"min_hours": 2, "max_hours": 8, "typical_hours": 4},
-        "Миграция данных": {"min_hours": 8, "max_hours": 40, "typical_hours": 16},
-        "Админ-панель": {"min_hours": 24, "max_hours": 80, "typical_hours": 40},
-        "Уведомления": {"min_hours": 8, "max_hours": 24, "typical_hours": 12},
-        "Поиск": {"min_hours": 8, "max_hours": 24, "typical_hours": 12},
-        "Фильтрация": {"min_hours": 4, "max_hours": 12, "typical_hours": 6},
-        "Экспорт": {"min_hours": 4, "max_hours": 16, "typical_hours": 8},
-        "Импорт": {"min_hours": 8, "max_hours": 24, "typical_hours": 12},
-        "Валидация": {"min_hours": 2, "max_hours": 8, "typical_hours": 4},
-    },
-    "phase_ratios": {
-        "Планирование": 0.10,
-        "Анализ": 0.10,
-        "Проектирование": 0.15,
-        "Разработка": 0.40,
-        "Тестирование": 0.15,
-        "Развертывание": 0.10,
-    },
-    "complexity_multipliers": {
-        "Низкий": 0.8,
-        "Средний": 1.0,
-        "Высокий": 1.5,
-    },
-    "min_hours_per_task": 2,
-    "max_hours_per_task": 80,
-    "min_hours_per_phase": 8,
-    "max_hours_per_phase": 500,
-}
+def _load_estimation_rules_from_file() -> Dict[str, Any]:
+    """Load estimation rules from the canonical JSON file.
+    
+    Returns:
+        Estimation rules dictionary
+    """
+    rules_path = Path(__file__).parent.parent / "data" / "estimation_rules.json"
+    try:
+        with open(rules_path, 'r', encoding='utf-8') as f:
+            full_rules = json.load(f)
+        
+        # Build flat task_templates for backward compatibility
+        flat_templates = {}
+        for category, tasks in full_rules.get("task_templates", {}).items():
+            for task_name, estimation in tasks.items():
+                flat_templates[task_name] = estimation
+        
+        limits = full_rules.get("limits", {})
+        
+        # Build complexity_multipliers as flat dict for backward compatibility
+        complexity = {}
+        for level, info in full_rules.get("complexity_multipliers", {}).items():
+            complexity[level] = info.get("multiplier", 1.0)
+        
+        # Build phase_ratios as flat dict
+        phase_ratios = {}
+        for phase_name, info in full_rules.get("phase_ratios", {}).items():
+            phase_ratios[phase_name] = info.get("ratio", 0.1)
+        
+        return {
+            "task_templates": flat_templates,
+            "phase_ratios": phase_ratios,
+            "complexity_multipliers": complexity,
+            "min_hours_per_task": limits.get("min_hours_per_task", 2),
+            "max_hours_per_task": limits.get("max_hours_per_task", 80),
+            "min_hours_per_phase": limits.get("min_hours_per_phase", 8),
+            "max_hours_per_phase": limits.get("max_hours_per_phase", 500),
+        }
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        logger.warning(f"Could not load estimation rules from file: {e}, using defaults")
+        return {
+            "task_templates": {},
+            "phase_ratios": {},
+            "complexity_multipliers": {"Низкий": 0.7, "Средний": 1.0, "Высокий": 1.4},
+            "min_hours_per_task": 2,
+            "max_hours_per_task": 80,
+            "min_hours_per_phase": 8,
+            "max_hours_per_phase": 500,
+        }
+
+
+# Load rules from the single source of truth: data/estimation_rules.json
+ESTIMATION_RULES = _load_estimation_rules_from_file()
 
 
 class ValidationResult:
@@ -386,8 +398,38 @@ class ValidatorAgent(BaseAgent):
         
         return max(0.0, min(1.0, base_score))
     
+    @staticmethod
+    def _coerce_to_number(value: Any, default: float = 0) -> float:
+        """Coerce a value to a number, handling string inputs from LLM.
+        
+        Args:
+            value: Value to coerce (may be int, float, str like "16 часов", etc.)
+            default: Default value if coercion fails
+            
+        Returns:
+            Numeric value
+        """
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            # Extract first number from string like "16 часов", "2-3 дня", etc.
+            import re
+            match = re.search(r'[\d.]+', value)
+            if match:
+                try:
+                    return float(match.group())
+                except ValueError:
+                    pass
+        return default
+    
     def normalize_wbs(self, wbs: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize WBS values to acceptable ranges.
+        """Normalize WBS values to acceptable ranges with bottom-up recalculation.
+        
+        Performs:
+        1. Type coercion (string → number) for all estimated_hours and duration_days
+        2. Clamp task hours to [min_hours_per_task, max_hours_per_task]
+        3. Recalculate duration_days = ceil(estimated_hours / 8)
+        4. Bottom-up recalculation: tasks → work_packages → phases → total
         
         Args:
             wbs: WBS to normalize
@@ -396,37 +438,67 @@ class ValidatorAgent(BaseAgent):
             Normalized WBS
         """
         import copy
+        import math
         normalized = copy.deepcopy(wbs)
         
-        # Normalize phases
+        min_task = self.estimation_rules['min_hours_per_task']
+        max_task = self.estimation_rules['max_hours_per_task']
+        min_phase = self.estimation_rules['min_hours_per_phase']
+        max_phase = self.estimation_rules['max_hours_per_phase']
+        
+        # Normalize phases with bottom-up recalculation
+        total_hours = 0
         if 'wbs' in normalized and 'phases' in normalized['wbs']:
             for phase in normalized['wbs']['phases']:
-                # Normalize phase hours
-                hours = phase.get('estimated_hours', 0)
-                hours = max(self.estimation_rules['min_hours_per_phase'], hours)
-                hours = min(self.estimation_rules['max_hours_per_phase'], hours)
-                phase['estimated_hours'] = hours
+                phase_hours_sum = 0
                 
                 # Normalize work packages
                 for wp in phase.get('work_packages', []):
-                    wp_hours = wp.get('estimated_hours', 0)
-                    wp['estimated_hours'] = max(self.estimation_rules['min_hours_per_task'], wp_hours)
+                    wp_hours_sum = 0
                     
-                    # Normalize tasks
+                    # Normalize tasks (bottom level)
                     for task in wp.get('tasks', []):
-                        task_hours = task.get('estimated_hours', 0)
-                        task['estimated_hours'] = max(
-                            self.estimation_rules['min_hours_per_task'],
-                            min(self.estimation_rules['max_hours_per_task'], task_hours)
-                        )
+                        # Type coercion
+                        task_hours = self._coerce_to_number(task.get('estimated_hours', 0))
+                        # Clamp to range
+                        task_hours = max(min_task, min(max_task, task_hours))
+                        task['estimated_hours'] = round(task_hours)
+                        # Recalculate duration_days
+                        task['duration_days'] = math.ceil(task_hours / 8)
+                        
+                        wp_hours_sum += task_hours
+                    
+                    # Bottom-up: WP hours = sum of task hours
+                    if wp.get('tasks'):
+                        wp['estimated_hours'] = round(wp_hours_sum)
+                    else:
+                        wp_hours = self._coerce_to_number(wp.get('estimated_hours', 0))
+                        wp['estimated_hours'] = round(max(min_task, wp_hours))
+                    
+                    # Recalculate WP duration_days
+                    wp['duration_days'] = math.ceil(wp['estimated_hours'] / 8)
+                    
+                    phase_hours_sum += wp['estimated_hours']
+                
+                # Bottom-up: phase hours = sum of WP hours
+                if phase.get('work_packages'):
+                    phase_hours = phase_hours_sum
+                else:
+                    phase_hours = self._coerce_to_number(phase.get('estimated_hours', 0))
+                
+                # Clamp phase hours
+                phase_hours = max(min_phase, min(max_phase, phase_hours))
+                phase['estimated_hours'] = round(phase_hours)
+                
+                # Recalculate phase duration
+                phase_days = math.ceil(phase_hours / 8)
+                phase['duration'] = f"{phase_days} дней"
+                
+                total_hours += phase['estimated_hours']
         
-        # Recalculate total
-        total_hours = 0
-        for phase in normalized.get('wbs', {}).get('phases', []):
-            total_hours += phase.get('estimated_hours', 0)
-        
+        # Update project_info with bottom-up total
         if 'project_info' in normalized:
-            normalized['project_info']['total_estimated_hours'] = total_hours
+            normalized['project_info']['total_estimated_hours'] = round(total_hours)
             # Estimate duration (assuming 8 hours per day, 5 days per week)
             weeks = max(1, round(total_hours / 40))
             normalized['project_info']['estimated_duration'] = f"{weeks} недель"

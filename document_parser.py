@@ -366,12 +366,15 @@ def parse_document(file_path: str) -> dict:
     if ext == '.pdf':
         logger.info("Detected PDF file, using PDF parser")
         parser = PDFParser(file_path)
-    elif ext in ('.doc', '.docx'):
+    elif ext == '.docx':
         logger.info(f"Detected Word file ({ext}), using Document parser")
         parser = DocumentParser(file_path)
+    elif ext == '.doc':
+        logger.error(f"Legacy .doc format is not supported. Please convert to .docx")
+        raise ValueError("Legacy .doc format is not supported. Please save as .docx and re-upload.")
     else:
         logger.error(f"Unsupported file type: {ext}")
-        raise ValueError(f"Unsupported file type: {ext}. Supported types: .doc, .docx, .pdf")
+        raise ValueError(f"Unsupported file type: {ext}. Supported types: .docx, .pdf")
     
     result = parser.get_full_content()
     

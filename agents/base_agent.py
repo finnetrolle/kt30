@@ -3,11 +3,11 @@ Base agent class for the multi-agent system.
 """
 import logging
 import json
-import re
 import time
 from typing import Dict, Any, Optional, List
 from openai import OpenAI
 from config import Config
+from json_utils import extract_json_from_response, fix_common_json_errors
 
 logger = logging.getLogger(__name__)
 
@@ -104,38 +104,10 @@ class BaseAgent:
         """
         raise NotImplementedError("Subclasses must implement _build_system_prompt")
     
-    def _fix_common_json_errors(self, text: str) -> str:
-        """Try to fix common JSON formatting errors.
-        
-        Args:
-            text: JSON text with potential errors
-            
-        Returns:
-            Fixed JSON text
-        """
-        import copy
-        
-        # Remove trailing commas before } or ]
-        fixed = re.sub(r',(\s*[}\]])', r'\1', text)
-        
-        # Fix missing commas between array elements (common LLM error)
-        # Pattern: "value"\n"value" -> "value",\n"value"
-        fixed = re.sub(r'"\s*\n\s*"', '",\n"', fixed)
-        
-        # Fix missing commas between object properties
-        # Pattern: ]\n"key" -> ],\n"key"
-        fixed = re.sub(r'(\])\s*\n\s*(")', r'\1,\n\2', fixed)
-        
-        # Fix missing commas after } before {
-        fixed = re.sub(r'(\})\s*\n\s*(\{)', r'\1,\n\2', fixed)
-        
-        # Fix missing commas after } before "
-        fixed = re.sub(r'(\})\s*\n\s*(")', r'\1,\n\2', fixed)
-        
-        return fixed
-    
     def _extract_json_from_response(self, text: str) -> Optional[str]:
         """Extract JSON from response that might contain markdown or other text.
+        
+        Delegates to shared json_utils module.
         
         Args:
             text: Raw response text
@@ -143,93 +115,7 @@ class BaseAgent:
         Returns:
             Extracted JSON string or None if not found
         """
-        # Try to parse the whole text as JSON
-        try:
-            json.loads(text)
-            return text
-        except json.JSONDecodeError:
-            pass
-        
-        # Try to fix and parse
-        try:
-            fixed = self._fix_common_json_errors(text)
-            json.loads(fixed)
-            logger.info("   🔧 JSON исправлен (базовые исправления)")
-            return fixed
-        except json.JSONDecodeError:
-            pass
-        
-        # Find JSON in markdown code blocks
-        json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
-        if json_match:
-            json_text = json_match.group(1).strip()
-            try:
-                json.loads(json_text)
-                return json_text
-            except json.JSONDecodeError:
-                # Try to fix
-                try:
-                    fixed = self._fix_common_json_errors(json_text)
-                    json.loads(fixed)
-                    logger.info("   🔧 JSON в markdown исправлен")
-                    return fixed
-                except json.JSONDecodeError:
-                    pass
-        
-        # Find all JSON objects and try each
-        brace_count = 0
-        json_start = -1
-        candidates = []
-        
-        for i, char in enumerate(text):
-            if char == '{':
-                if brace_count == 0:
-                    json_start = i
-                brace_count += 1
-            elif char == '}':
-                brace_count -= 1
-                if brace_count == 0 and json_start != -1:
-                    candidates.append(text[json_start:i+1])
-                    json_start = -1
-        
-        # Try each candidate, starting from the largest
-        candidates.sort(key=len, reverse=True)
-        
-        for candidate in candidates:
-            try:
-                json.loads(candidate)
-                return candidate
-            except json.JSONDecodeError:
-                # Try to fix
-                try:
-                    fixed = self._fix_common_json_errors(candidate)
-                    json.loads(fixed)
-                    logger.info("   🔧 JSON кандидат исправлен")
-                    return fixed
-                except json.JSONDecodeError:
-                    continue
-        
-        # Last resort - find first { and last } and try to fix
-        first_brace = text.find('{')
-        last_brace = text.rfind('}')
-        
-        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-            json_text = text[first_brace:last_brace + 1]
-            try:
-                json.loads(json_text)
-                return json_text
-            except json.JSONDecodeError:
-                # Try to fix
-                try:
-                    fixed = self._fix_common_json_errors(json_text)
-                    json.loads(fixed)
-                    logger.info("   🔧 JSON (last resort) исправлен")
-                    return fixed
-                except json.JSONDecodeError:
-                    # Return original even if broken - let caller handle error
-                    return json_text
-        
-        return None
+        return extract_json_from_response(text, log_prefix=f"   [{self.name}] ")
     
     def send_message(self, message: str, expect_json: bool = True, 
                      request_id: str = None) -> Dict[str, Any]:
@@ -269,66 +155,96 @@ class BaseAgent:
             api_params["response_format"] = {"type": "json_object"}
             logger.info(f"   [Using JSON response format]")
         
-        try:
-            start_time = time.time()
-            logger.info(f"   [Вызов API...]")
-            
-            response = self.client.chat.completions.create(**api_params)
-            
-            elapsed_time = time.time() - start_time
-            response_text = response.choices[0].message.content
-            
-            # Log LLM response
-            self.event_logger.log_llm_response(self.name, response_text, elapsed_time)
-            
-            # Log token usage if available
-            if response.usage:
-                logger.info(f"   Токены: prompt={response.usage.prompt_tokens}, "
-                           f"completion={response.usage.completion_tokens}, "
-                           f"total={response.usage.total_tokens}")
-            
-            # Add response to conversation history
-            self.conversation_history.append({
-                "role": "assistant",
-                "content": response_text
-            })
-            
-            if expect_json:
-                json_text = self._extract_json_from_response(response_text)
-                if json_text:
-                    parsed_data = json.loads(json_text)
-                    logger.info(f"   ✅ JSON успешно извлечен и распарсен")
+        # Retry with exponential backoff
+        max_retries = 3
+        base_delay = 2.0  # seconds
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    delay = base_delay * (2 ** (attempt - 1))
+                    logger.info(f"   [Retry {attempt}/{max_retries - 1}, waiting {delay:.1f}s...]")
+                    time.sleep(delay)
+                
+                start_time = time.time()
+                logger.info(f"   [API call attempt {attempt + 1}/{max_retries}...]")
+                
+                response = self.client.chat.completions.create(**api_params)
+                
+                elapsed_time = time.time() - start_time
+                response_text = response.choices[0].message.content
+                
+                # Log LLM response
+                self.event_logger.log_llm_response(self.name, response_text, elapsed_time)
+                
+                # Log token usage if available
+                if response.usage:
+                    logger.info(f"   Tokens: prompt={response.usage.prompt_tokens}, "
+                               f"completion={response.usage.completion_tokens}, "
+                               f"total={response.usage.total_tokens}")
+                
+                # Add response to conversation history
+                self.conversation_history.append({
+                    "role": "assistant",
+                    "content": response_text
+                })
+                
+                if expect_json:
+                    json_text = self._extract_json_from_response(response_text)
+                    if json_text:
+                        parsed_data = json.loads(json_text)
+                        logger.info(f"   ✅ JSON extracted and parsed successfully")
+                        return {
+                            "success": True,
+                            "data": parsed_data,
+                            "raw_response": response_text,
+                            "elapsed_time": elapsed_time
+                        }
+                    else:
+                        logger.warning(f"   ⚠️ Could not extract JSON from response")
+                        return {
+                            "success": False,
+                            "error": "Could not extract JSON from response",
+                            "raw_response": response_text
+                        }
+                else:
                     return {
                         "success": True,
-                        "data": parsed_data,
-                        "raw_response": response_text,
+                        "data": response_text,
                         "elapsed_time": elapsed_time
                     }
+                    
+            except Exception as e:
+                last_error = e
+                error_str = str(e)
+                # Retry on rate limit (429), server errors (5xx), timeouts
+                is_retryable = any(keyword in error_str.lower() for keyword in [
+                    "rate limit", "429", "500", "502", "503", "504",
+                    "timeout", "connection", "overloaded"
+                ])
+                
+                if is_retryable and attempt < max_retries - 1:
+                    logger.warning(f"   ⚠️ Retryable error (attempt {attempt + 1}): {error_str}")
+                    continue
                 else:
-                    logger.warning(f"   ⚠️ Не удалось извлечь JSON из ответа")
+                    self.event_logger.log_agent_error(self.name, error_str)
                     return {
                         "success": False,
-                        "error": "Could not extract JSON from response",
-                        "raw_response": response_text
+                        "error": error_str
                     }
-            else:
-                return {
-                    "success": True,
-                    "data": response_text,
-                    "elapsed_time": elapsed_time
-                }
-                
-        except Exception as e:
-            self.event_logger.log_agent_error(self.name, str(e))
-            return {
-                "success": False,
-                "error": str(e)
-            }
+        
+        # Should not reach here, but just in case
+        self.event_logger.log_agent_error(self.name, str(last_error))
+        return {
+            "success": False,
+            "error": str(last_error)
+        }
     
     def reset_conversation(self):
         """Reset the conversation history."""
         self.conversation_history = []
-        logger.info(f"[{self.name}] История对话 сброшена")
+        logger.info(f"[{self.name}] Conversation history reset")
     
     def get_conversation_summary(self) -> str:
         """Get a summary of the conversation.
