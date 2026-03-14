@@ -279,7 +279,7 @@ make smoke
 ├── rate_limiter.py        # Межпроцессный rate limiter
 ├── Makefile               # Типовые команды разработки и эксплуатации
 ├── ops/                   # Healthcheck scripts и runbook
-├── deploy/                # Примеры systemd и Kubernetes manifests
+├── deploy/                # Примеры systemd unit-файлов
 ├── .github/workflows/     # CI pipeline
 ├── config.py              # Конфигурация
 ├── document_parser.py     # Парсер Word и PDF документов
@@ -300,7 +300,6 @@ make smoke
 ## Deployment Artifacts
 
 - `deploy/systemd/` содержит `kt30-web.service`, `kt30-worker.service` и пример env-файла.
-- `deploy/k8s/` содержит namespace, configmap, secret template, PVC, web/worker deployments и service.
 - `ops/RUNBOOK.md` содержит production checklist, smoke test и incident response.
 ├── data/
 │   └── estimation_rules.json # Справочник трудозатрат

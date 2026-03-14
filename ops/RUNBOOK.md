@@ -39,13 +39,6 @@
 4. Установить юниты из `deploy/systemd/`.
 5. Выполнить `systemctl daemon-reload && systemctl enable --now kt30-web kt30-worker`.
 
-### Kubernetes
-
-1. Создать namespace, ConfigMap, Secret и RWX PVC из `deploy/k8s/`.
-2. Указать production image.
-3. Применить `web-deployment.yaml`, `worker-deployment.yaml`, `service.yaml`.
-4. Проверить readiness/liveness probes и mount shared storage.
-
 ## Smoke Test
 
 1. Открыть главную страницу.
