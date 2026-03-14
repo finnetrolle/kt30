@@ -5,11 +5,44 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      EMBEDDED_WORKER_ENABLED: "false"
     volumes:
       - uploads_data:/app/uploads
       - results_data:/app/results_data
       - progress_data:/app/progress_data
       - analysis_runs_data:/app/analysis_runs
+      - runtime_data:/app/runtime
+    healthcheck:
+      test: ["CMD", "python", "ops/healthcheck_web.py"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["python", "worker.py"]
+    env_file:
+      - .env
+    environment:
+      EMBEDDED_WORKER_ENABLED: "false"
+      WORKER_ID: "worker-1"
+    volumes:
+      - uploads_data:/app/uploads
+      - results_data:/app/results_data
+      - progress_data:/app/progress_data
+      - analysis_runs_data:/app/analysis_runs
+      - runtime_data:/app/runtime
+    healthcheck:
+      test: ["CMD", "python", "ops/healthcheck_worker.py"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -19,3 +52,4 @@ volumes:
   results_data:
   progress_data:
   analysis_runs_data:
+  runtime_data:

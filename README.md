@@ -203,16 +203,25 @@ python app.py
 gunicorn -w 4 -b 0.0.0.0:8000 app:app
 ```
 
+Для production-режима анализ теперь должен выполняться отдельным worker-процессом:
+
+```bash
+python worker.py
+```
+
+`app.py` отвечает только за web/API/SSE слой и постановку задач в durable queue.
+
 ### Docker
 
 1. Убедитесь, что файл `.env` создан и заполнен (см. раздел «Установка»).
 
-2. Запустите приложение:
+2. Запустите web и worker сервисы:
 ```bash
 docker compose up -d
 ```
 
 3. Приложение будет доступно по адресу: http://localhost:8000
+4. Проверить готовность web-процесса можно через `GET /ready`
 
 Для пересборки образа после изменений:
 ```bash
@@ -222,6 +231,26 @@ docker compose up -d --build
 Для остановки:
 ```bash
 docker compose down
+```
+
+Проверка готовности контейнеров:
+
+```bash
+docker compose ps
+python ops/healthcheck_web.py
+python ops/healthcheck_worker.py
+```
+
+### Makefile
+
+Для типовых операций доступны команды:
+
+```bash
+make test-all
+make run-web
+make run-worker
+make compose-build
+make smoke
 ```
 
 ## Использование
@@ -243,6 +272,15 @@ docker compose down
 ```
 .
 ├── app.py                 # Основное Flask приложение
+├── worker.py              # Entry point отдельного worker-процесса
+├── job_queue.py           # Durable очередь задач на SQLite
+├── job_worker.py          # Worker loop для выполнения анализа
+├── analysis_jobs.py       # Общая логика выполнения analysis job
+├── rate_limiter.py        # Межпроцессный rate limiter
+├── Makefile               # Типовые команды разработки и эксплуатации
+├── ops/                   # Healthcheck scripts и runbook
+├── deploy/                # Примеры systemd и Kubernetes manifests
+├── .github/workflows/     # CI pipeline
 ├── config.py              # Конфигурация
 ├── document_parser.py     # Парсер Word и PDF документов
 ├── openai_client.py       # Клиент OpenAI API
@@ -258,6 +296,12 @@ docker compose down
 │   ├── validator_agent.py # Агент-валидатор
 │   ├── result_stabilizer.py # Стабилизация результатов
 │   └── agent_orchestrator.py # Оркестратор агентов
+
+## Deployment Artifacts
+
+- `deploy/systemd/` содержит `kt30-web.service`, `kt30-worker.service` и пример env-файла.
+- `deploy/k8s/` содержит namespace, configmap, secret template, PVC, web/worker deployments и service.
+- `ops/RUNBOOK.md` содержит production checklist, smoke test и incident response.
 ├── data/
 │   └── estimation_rules.json # Справочник трудозатрат
 ├── templates/

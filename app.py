@@ -6,20 +6,20 @@ import os
 import json
 import logging
 import secrets
-import threading
 import time
 import uuid
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file, session, Response
 from werkzeug.utils import secure_filename
-from config import Config, config as app_config
-from document_parser import parse_document
-from openai_client import analyze_specification
+from config import Config, get_active_config_class
 from excel_export import export_wbs_to_excel, calculate_project_duration_with_parallel, build_dependencies_matrix
 from result_store import get_result_store
 from progress_tracker import get_progress_store
 from run_artifacts import RunArtifacts, cleanup_expired_runs
 from wbs_utils import canonicalize_wbs_result, has_legacy_root_phases, recover_wbs_from_artifacts
+from job_queue import get_job_queue, JobStatus
+from rate_limiter import get_rate_limiter
+from job_worker import JobWorker
 
 
 # Configure logging
@@ -62,6 +62,8 @@ def create_app(config_class=Config):
         storage_root=app.config['PROGRESS_STORAGE_DIR'],
         ttl_seconds=app.config['PROGRESS_TTL_SECONDS']
     )
+    job_queue = get_job_queue(app.config['JOB_QUEUE_DB_PATH'])
+    rate_limiter = get_rate_limiter(app.config['RATE_LIMIT_DB_PATH'])
     cleanup_expired_runs(
         app.config['ARTIFACTS_ROOT'],
         app.config['ARTIFACT_RETENTION_SECONDS']
@@ -158,6 +160,33 @@ def create_app(config_class=Config):
             response.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
         return response
 
+    rate_limit_rules = {
+        'login': (5, 60),
+        'upload_file': (10, 60),
+        'progress_stream': (120, 60),
+        'cancel_task': (20, 60)
+    }
+
+    @app.before_request
+    def enforce_rate_limits():
+        """Rate limit sensitive endpoints across workers."""
+        rule = rate_limit_rules.get(request.endpoint)
+        if not rule:
+            return None
+
+        remote_addr = request.headers.get('X-Forwarded-For', request.remote_addr or 'unknown')
+        rate_key = remote_addr.split(',')[0].strip()
+        limit, window = rule
+        result = rate_limiter.check(request.endpoint, rate_key, limit, window)
+
+        if not result["allowed"]:
+            response = jsonify({'error': 'Rate limit exceeded'})
+            response.status_code = 429
+            response.headers['Retry-After'] = str(max(1, result["reset_at"] - int(time.time())))
+            return response
+
+        return None
+
     # Optional authentication middleware
     auth_password = app.config['APP_AUTH_PASSWORD']
     if auth_password:
@@ -205,140 +234,6 @@ def create_app(config_class=Config):
         """Render the upload page."""
         logger.info("Rendering upload page")
         return render_template('index.html')
-    
-    def _process_file_background(task_id: str, filepath: str, filename: str, unique_id: str, request_id: str):
-        """Background processing function that runs in a separate thread.
-        
-        Args:
-            task_id: Task ID for progress tracking
-            filepath: Path to the uploaded file
-            filename: Original filename
-            unique_id: Unique ID for result storage
-            request_id: Request ID for logging
-        """
-        tracker = progress_store.get(task_id)
-        
-        try:
-            # Parse the document
-            if tracker:
-                tracker.stage("📄 Парсинг документа...")
-            logger.info(f"[{request_id}] Starting document parsing...")
-            document_content = parse_document(filepath)
-            text_length = len(document_content['raw_text'])
-            sections_count = len(document_content['structure'].get('sections', []))
-            tables_count = len(document_content.get('tables', []))
-            logger.info(f"[{request_id}] Document parsed successfully:")
-            logger.info(f"[{request_id}]   - Text length: {text_length} characters")
-            logger.info(f"[{request_id}]   - Sections found: {sections_count}")
-            logger.info(f"[{request_id}]   - Tables found: {tables_count}")
-
-            if tracker:
-                tracker.write_json_artifact("parsed_document.json", document_content)
-            
-            if tracker:
-                tracker.info(f"📄 Документ разобран: {text_length} символов, {sections_count} секций, {tables_count} таблиц")
-            
-            # Prepare text for analysis
-            analysis_text = document_content['raw_text']
-            
-            # Add only a compact outline to avoid duplicating the full document content.
-            if document_content['structure']['sections']:
-                analysis_text += "\n\nОглавление документа:\n"
-                for section in document_content['structure']['sections']:
-                    indent = "  " * (section['level'] - 1)
-                    analysis_text += f"{indent}{section['title']}\n"
-
-            if tracker:
-                tracker.write_text_artifact("analysis_input.txt", analysis_text)
-                tracker.record_intermediate(
-                    "document_prepared_for_analysis",
-                    {
-                        "text_length": len(analysis_text),
-                        "sections_count": sections_count,
-                        "tables_count": tables_count
-                    }
-                )
-            
-            # Analyze with OpenAI (multi-agent system)
-            if tracker:
-                tracker.stage("🤖 Запуск мульти-агентного анализа...")
-            logger.info(f"[{request_id}] Starting OpenAI analysis...")
-            logger.info(f"[{request_id}]   - API Base: {app.config['OPENAI_API_BASE']}")
-            logger.info(f"[{request_id}]   - Model: {app.config['OPENAI_MODEL']}")
-            
-            result = analyze_specification(analysis_text, request_id=request_id, progress_tracker=tracker)
-            
-            if not result['success']:
-                logger.error(f"[{request_id}] OpenAI analysis failed: {result['error']}")
-                if tracker:
-                    tracker.write_json_artifact("analysis_error.json", result)
-                # Clean up uploaded file
-                try:
-                    os.remove(filepath)
-                    logger.info(f"[{request_id}] Cleaned up uploaded file")
-                except Exception as cleanup_error:
-                    logger.warning(f"[{request_id}] Failed to cleanup file: {cleanup_error}")
-                if tracker:
-                    tracker.error(f"Ошибка анализа: {result['error']}")
-                return
-            
-            logger.info(f"[{request_id}] OpenAI analysis completed successfully")
-            if 'usage' in result:
-                logger.info(f"[{request_id}] Token usage: {result['usage']}")
-            token_usage = result.get('metadata', {}).get('token_usage', {})
-            normalized_result = canonicalize_wbs_result(result.get('data', {}))
-            
-            # Clean up uploaded file
-            try:
-                os.remove(filepath)
-                logger.info(f"[{request_id}] Cleaned up uploaded file")
-            except Exception as cleanup_error:
-                logger.warning(f"[{request_id}] Failed to cleanup file: {cleanup_error}")
-            
-            # Store result with unique ID
-            result_id = unique_id
-            store.save(result_id, {
-                'filename': filename,
-                'timestamp': datetime.now().isoformat(),
-                'result': normalized_result,
-                'usage': result.get('usage', {}),
-                'metadata': result.get('metadata', {}),
-                'agent_conversation': result.get('agent_conversation', []),
-                'token_usage': token_usage,
-                'artifacts_dir': tracker.artifacts_dir if tracker else None
-            })
-
-            if tracker:
-                tracker.write_json_artifact("final_result.json", {
-                    'filename': filename,
-                    'timestamp': datetime.now().isoformat(),
-                    'result': normalized_result,
-                    'usage': result.get('usage', {}),
-                    'metadata': result.get('metadata', {}),
-                    'agent_conversation': result.get('agent_conversation', []),
-                    'token_usage': token_usage,
-                    'result_id': result_id,
-                    'artifacts_dir': tracker.artifacts_dir
-                })
-            
-            logger.info(f"[{request_id}] Analysis result stored with ID: {result_id}")
-            
-            # Signal completion with redirect URL
-            # We need app context for url_for, so build URL manually
-            redirect_url = f"/results/{result_id}"
-            if tracker:
-                tracker.complete(redirect_url, result_id, {
-                    'artifacts_dir': tracker.artifacts_dir if tracker else None
-                })
-            
-        except Exception as e:
-            logger.exception(f"[{request_id}] Unexpected error during background processing: {str(e)}")
-            if tracker:
-                tracker.write_json_artifact("background_error.json", {
-                    "error": str(e),
-                    "request_id": request_id
-                })
-                tracker.error(f"Непредвиденная ошибка: {str(e)}")
     
     @app.route('/upload', methods=['POST'])
     def upload_file():
@@ -411,16 +306,19 @@ def create_app(config_class=Config):
                     "artifacts_dir": tracker.artifacts_dir
                 }
             )
-            
-            # Start background processing
-            thread = threading.Thread(
-                target=_process_file_background,
-                args=(task_id, filepath, filename, unique_id, request_id),
-                daemon=True
-            )
-            thread.start()
-            
-            logger.info(f"[{request_id}] Background processing started, task_id: {task_id}")
+
+            tracker.stage("⏳ Задача поставлена в очередь")
+            tracker.info("⏳ Анализ будет запущен worker-процессом")
+            job_queue.enqueue(task_id, {
+                "task_id": task_id,
+                "filepath": filepath,
+                "filename": filename,
+                "unique_id": unique_id,
+                "request_id": request_id,
+                "artifacts_dir": tracker.artifacts_dir
+            })
+
+            logger.info(f"[{request_id}] Job queued successfully, task_id: {task_id}")
             
             # Return task_id for SSE subscription
             return jsonify({
@@ -430,6 +328,11 @@ def create_app(config_class=Config):
             
         except Exception as e:
             logger.exception(f"[{request_id}] Unexpected error during upload: {str(e)}")
+            if 'filepath' in locals() and os.path.exists(filepath):
+                try:
+                    os.remove(filepath)
+                except OSError:
+                    pass
             return jsonify({'error': str(e)}), 500
     
     @app.route('/progress/<task_id>')
@@ -479,6 +382,32 @@ def create_app(config_class=Config):
                 'Connection': 'keep-alive'
             }
         )
+
+    @app.route('/api/tasks/<task_id>')
+    def task_status(task_id):
+        """Return the durable status of a queued or running task."""
+        job = job_queue.get(task_id)
+        if not job:
+            return jsonify({'error': 'Task not found'}), 404
+        return jsonify(job)
+
+    @app.route('/api/tasks/<task_id>/cancel', methods=['POST'])
+    def cancel_task(task_id):
+        """Request cancellation for a queued or running task."""
+        job = job_queue.request_cancel(task_id)
+        if not job:
+            return jsonify({'error': 'Task not found'}), 404
+
+        if job['status'] == JobStatus.CANCELED:
+            tracker = progress_store.get(task_id)
+            if tracker:
+                tracker.error("Задача отменена пользователем")
+            return jsonify({'success': True, 'status': JobStatus.CANCELED})
+
+        if job['status'] == JobStatus.RUNNING:
+            return jsonify({'success': True, 'status': 'cancel_requested'}), 202
+
+        return jsonify({'success': True, 'status': job['status']})
     
     @app.route('/results/<result_id>')
     def results(result_id):
@@ -557,16 +486,19 @@ def create_app(config_class=Config):
     @app.route('/health')
     def health():
         """Health check endpoint."""
+        worker_health = job_queue.get_worker_health(app.config['JOB_STALE_AFTER_SECONDS'])
         return jsonify({
             'status': 'healthy',
             'environment': app.config['ENV_NAME'],
-            'auth_enabled': bool(app.config['APP_AUTH_PASSWORD'])
+            'auth_enabled': bool(app.config['APP_AUTH_PASSWORD']),
+            'workers': worker_health
         })
 
     @app.route('/ready')
     def ready():
         """Readiness endpoint with basic dependency checks."""
         required_dirs = {
+            'runtime': app.config['RUNTIME_DIR'],
             'uploads': app.config['UPLOAD_FOLDER'],
             'artifacts': app.config['ARTIFACTS_ROOT'],
             'progress': app.config['PROGRESS_STORAGE_DIR'],
@@ -576,10 +508,17 @@ def create_app(config_class=Config):
             name: os.path.isdir(path)
             for name, path in required_dirs.items()
         }
+        checks['job_queue_db'] = os.path.exists(app.config['JOB_QUEUE_DB_PATH'])
+        checks['rate_limit_db'] = os.path.exists(app.config['RATE_LIMIT_DB_PATH'])
+        worker_health = job_queue.get_worker_health(app.config['JOB_STALE_AFTER_SECONDS'])
+        checks['worker_available'] = (
+            app.config['EMBEDDED_WORKER_ENABLED'] or worker_health['healthy_workers'] > 0
+        )
         status_code = 200 if all(checks.values()) else 503
         return jsonify({
             'status': 'ready' if status_code == 200 else 'degraded',
-            'checks': checks
+            'checks': checks,
+            'workers': worker_health
         }), status_code
     
     @app.errorhandler(413)
@@ -593,14 +532,19 @@ def create_app(config_class=Config):
         """Handle server error."""
         logger.error(f"Server error: {e}")
         return jsonify({'error': 'Internal server error'}), 500
+
+    if app.config['EMBEDDED_WORKER_ENABLED'] and not app.config.get('TESTING', False):
+        embedded_worker = JobWorker(worker_id=f"embedded-{os.getpid()}-{uuid.uuid4().hex[:6]}")
+        embedded_worker.start_in_background()
+        app.extensions['embedded_worker'] = embedded_worker
+        logger.info("Embedded job worker started")
     
     logger.info("Flask application created successfully")
     return app
 
 
 # Create application instance
-_config_name = os.getenv('APP_ENV', os.getenv('FLASK_ENV', 'development')).lower()
-app = create_app(app_config.get(_config_name, Config))
+app = create_app(get_active_config_class())
 
 
 if __name__ == '__main__':

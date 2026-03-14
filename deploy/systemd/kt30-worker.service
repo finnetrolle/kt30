@@ -1,0 +1,24 @@
+[Unit]
+Description=KT30 Worker Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kt30
+Group=kt30
+WorkingDirectory=/opt/kt30/current
+EnvironmentFile=/etc/kt30/kt30.env
+Environment=APP_ENV=production
+Environment=EMBEDDED_WORKER_ENABLED=false
+ExecStart=/opt/kt30/current/.venv/bin/python worker.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

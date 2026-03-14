@@ -104,14 +104,24 @@ class Config:
     ).lower() == 'true'
     
     # File upload configuration
+    RUNTIME_DIR = os.getenv('RUNTIME_DIR', 'runtime')
     UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'uploads')
     ARTIFACTS_ROOT = os.getenv('ARTIFACTS_ROOT', 'analysis_runs')
     RESULTS_STORAGE_DIR = os.getenv('RESULTS_STORAGE_DIR', 'results_data')
     PROGRESS_STORAGE_DIR = os.getenv('PROGRESS_STORAGE_DIR', 'progress_data')
+    JOB_QUEUE_DB_PATH = os.getenv('JOB_QUEUE_DB_PATH', os.path.join(RUNTIME_DIR, 'job_queue.sqlite3'))
+    RATE_LIMIT_DB_PATH = os.getenv('RATE_LIMIT_DB_PATH', os.path.join(RUNTIME_DIR, 'rate_limits.sqlite3'))
     MAX_CONTENT_LENGTH = int(os.getenv('MAX_CONTENT_LENGTH', 16 * 1024 * 1024))  # 16MB default
     RESULT_TTL_SECONDS = int(os.getenv('RESULT_TTL_SECONDS', 24 * 60 * 60))
     PROGRESS_TTL_SECONDS = int(os.getenv('PROGRESS_TTL_SECONDS', 2 * 60 * 60))
     ARTIFACT_RETENTION_SECONDS = int(os.getenv('ARTIFACT_RETENTION_SECONDS', 7 * 24 * 60 * 60))
+    JOB_RETENTION_SECONDS = int(os.getenv('JOB_RETENTION_SECONDS', 7 * 24 * 60 * 60))
+    JOB_STALE_AFTER_SECONDS = int(os.getenv('JOB_STALE_AFTER_SECONDS', 30 * 60))
+    WORKER_POLL_INTERVAL_SECONDS = float(os.getenv('WORKER_POLL_INTERVAL_SECONDS', '2.0'))
+    EMBEDDED_WORKER_ENABLED = os.getenv(
+        'EMBEDDED_WORKER_ENABLED',
+        'true' if ENV_NAME == 'development' else 'false'
+    ).lower() == 'true'
     # Note: .doc (legacy Word format) is NOT supported by python-docx, only .docx
     ALLOWED_EXTENSIONS = {'docx', 'pdf'}
     
@@ -125,7 +135,9 @@ class Config:
     
     @classmethod
     def apply_runtime_overrides(cls, source_cls: type) -> None:
-        """Copy uppercase settings from the selected config into the base Config."""
+        """Reset to base defaults, then copy selected config onto the shared runtime Config."""
+        for name, value in _BASE_CONFIG_DEFAULTS.items():
+            setattr(cls, name, value)
         for name in dir(source_cls):
             if not name.isupper():
                 continue
@@ -156,9 +168,15 @@ class Config:
         logger.info(f"  - ARTIFACTS_ROOT: {cls.ARTIFACTS_ROOT}")
         logger.info(f"  - RESULTS_STORAGE_DIR: {cls.RESULTS_STORAGE_DIR}")
         logger.info(f"  - PROGRESS_STORAGE_DIR: {cls.PROGRESS_STORAGE_DIR}")
+        logger.info(f"  - JOB_QUEUE_DB_PATH: {cls.JOB_QUEUE_DB_PATH}")
+        logger.info(f"  - RATE_LIMIT_DB_PATH: {cls.RATE_LIMIT_DB_PATH}")
         logger.info(f"  - RESULT_TTL_SECONDS: {cls.RESULT_TTL_SECONDS}")
         logger.info(f"  - PROGRESS_TTL_SECONDS: {cls.PROGRESS_TTL_SECONDS}")
         logger.info(f"  - ARTIFACT_RETENTION_SECONDS: {cls.ARTIFACT_RETENTION_SECONDS}")
+        logger.info(f"  - JOB_RETENTION_SECONDS: {cls.JOB_RETENTION_SECONDS}")
+        logger.info(f"  - JOB_STALE_AFTER_SECONDS: {cls.JOB_STALE_AFTER_SECONDS}")
+        logger.info(f"  - WORKER_POLL_INTERVAL_SECONDS: {cls.WORKER_POLL_INTERVAL_SECONDS}")
+        logger.info(f"  - EMBEDDED_WORKER_ENABLED: {cls.EMBEDDED_WORKER_ENABLED}")
         logger.info(f"  - MAX_CONTENT_LENGTH: {cls.MAX_CONTENT_LENGTH} bytes")
         logger.info(f"  - WBS_TEMPLATE_PATH: {cls.WBS_TEMPLATE_PATH}")
 
@@ -198,6 +216,13 @@ class Config:
             logger.info("Artifacts root created")
         else:
             logger.info(f"Artifacts root exists: {cls.ARTIFACTS_ROOT}")
+
+        if not os.path.exists(cls.RUNTIME_DIR):
+            logger.info(f"Creating runtime dir: {cls.RUNTIME_DIR}")
+            os.makedirs(cls.RUNTIME_DIR, exist_ok=True)
+            logger.info("Runtime dir created")
+        else:
+            logger.info(f"Runtime dir exists: {cls.RUNTIME_DIR}")
 
         if not os.path.exists(cls.RESULTS_STORAGE_DIR):
             logger.info(f"Creating results storage dir: {cls.RESULTS_STORAGE_DIR}")
@@ -279,6 +304,14 @@ class TestingConfig(Config):
     DEBUG = True
     TESTING = True
     SESSION_COOKIE_SECURE = False
+    EMBEDDED_WORKER_ENABLED = False
+
+
+_BASE_CONFIG_DEFAULTS = {
+    name: getattr(Config, name)
+    for name in dir(Config)
+    if name.isupper()
+}
 
 
 # Configuration dictionary
@@ -288,3 +321,9 @@ config = {
     'testing': TestingConfig,
     'default': DevelopmentConfig
 }
+
+
+def get_active_config_class():
+    """Resolve the active configuration class from environment variables."""
+    config_name = os.getenv('APP_ENV', os.getenv('FLASK_ENV', 'development')).lower()
+    return config.get(config_name, Config)

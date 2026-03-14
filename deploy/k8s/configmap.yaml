@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kt30-config
+  namespace: kt30
+data:
+  APP_ENV: "production"
+  DEBUG: "false"
+  OPENAI_API_BASE: "https://api.openai.com/v1"
+  OPENAI_MODEL: "gpt-4"
+  OPENAI_JSON_MODE: "true"
+  SESSION_COOKIE_SECURE: "true"
+  SESSION_COOKIE_SAMESITE: "Lax"
+  PERMANENT_SESSION_LIFETIME_SECONDS: "43200"
+  EMBEDDED_WORKER_ENABLED: "false"
+  MAX_CONTENT_LENGTH: "16777216"
+  RESULT_TTL_SECONDS: "86400"
+  PROGRESS_TTL_SECONDS: "7200"
+  ARTIFACT_RETENTION_SECONDS: "604800"
+  JOB_RETENTION_SECONDS: "604800"
+  JOB_STALE_AFTER_SECONDS: "1800"
+  WORKER_POLL_INTERVAL_SECONDS: "2.0"
+  RUNTIME_DIR: "/var/lib/kt30/runtime"
+  UPLOAD_FOLDER: "/var/lib/kt30/uploads"
+  ARTIFACTS_ROOT: "/var/lib/kt30/analysis_runs"
+  RESULTS_STORAGE_DIR: "/var/lib/kt30/results_data"
+  PROGRESS_STORAGE_DIR: "/var/lib/kt30/progress_data"
+  JOB_QUEUE_DB_PATH: "/var/lib/kt30/runtime/job_queue.sqlite3"
+  RATE_LIMIT_DB_PATH: "/var/lib/kt30/runtime/rate_limits.sqlite3"
