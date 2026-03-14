@@ -1,6 +1,6 @@
 # План миграции на отдельный frontend
 
-Статус: in_progress
+Статус: completed
 
 Дата фиксации: 2026-03-14
 
@@ -33,12 +33,20 @@
 - upload/progress flow умеет сохранять `taskId` в URL и восстанавливаться после refresh
 - во `frontend/` настроен `Vitest` и добавлены тесты для upload, progress, result view и API client
 - добавлен `Playwright` e2e, который проверяет browser-level flow `login -> upload -> progress -> results` под `/app`
+- e2e-покрытие расширено на edge-cases:
+  - auth failure
+  - cancel task
+  - missing task recovery
+  - missing result recovery
+- backend entry points (`/`, `/login`, `/results/:id`) переключены на standalone frontend
+- legacy templates/static UI удалены из основного пользовательского сценария
+- standalone frontend стал primary UI приложения
 
-Следующий фокус:
+Итог:
 
-- довести новый frontend до полного feature parity со старым UI
-- добавить e2e для edge-cases: cancel, auth failure, broken task/result recovery
-- продумать момент переключения пользователей со старого UI на новый
+- функциональный parity достигнут
+- пользователи переключены на standalone frontend
+- legacy UI больше не участвует в основном сценарии
 
 ## Цель
 
@@ -258,6 +266,13 @@ Cross-origin допускается только как dev-режим при н
 - Milestone 3: новый frontend умеет results + export
 - Milestone 4: legacy UI выключен
 
+Статус milestones:
+
+- Milestone 1: completed
+- Milestone 2: completed
+- Milestone 3: completed
+- Milestone 4: completed
+
 ## Definition of Done
 
 Миграцию считаем завершенной, когда:
@@ -267,6 +282,10 @@ Cross-origin допускается только как dev-режим при н
 - новые API-контракты стабилизированы и покрыты тестами
 - production использует новый frontend
 - старые `templates/` и `static/js` больше не участвуют в пользовательском сценарии
+
+Статус DoD:
+
+- выполнено
 
 ## Что делаем первым
 
@@ -281,4 +300,4 @@ Cross-origin допускается только как dev-режим при н
 
 ## Примечание
 
-До завершения migration phase старый UI сохраняем как fallback и не удаляем преждевременно.
+Migration phase завершена. Старый UI выведен из пользовательского сценария, а legacy routes оставлены только как compatibility redirects.

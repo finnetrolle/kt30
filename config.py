@@ -124,7 +124,7 @@ class Config:
     ).lower() == 'true'
     SERVE_FRONTEND_BUILD = os.getenv(
         'SERVE_FRONTEND_BUILD',
-        'true' if ENV_NAME == 'production' else 'false'
+        'true'
     ).lower() == 'true'
     FRONTEND_DIST_DIR = os.getenv('FRONTEND_DIST_DIR', os.path.join('frontend', 'dist'))
     FRONTEND_ROUTE_PREFIX = os.getenv('FRONTEND_ROUTE_PREFIX', 'app').strip('/') or 'app'

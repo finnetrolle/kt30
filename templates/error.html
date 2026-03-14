@@ -3,30 +3,89 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="csrf-token" content="{{ csrf_token }}">
     <title>Ошибка - Анализатор ТЗ</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        :root {
+            color-scheme: light;
+            font-family: "Avenir Next", "Segoe UI", sans-serif;
+            background:
+                radial-gradient(circle at top left, rgba(246, 160, 83, 0.16), transparent 30%),
+                linear-gradient(180deg, #f6f2ea 0%, #eef4f8 100%);
+            color: #13202b;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+        }
+
+        .error-shell {
+            width: min(680px, 100%);
+            padding: 32px;
+            border-radius: 28px;
+            background: rgba(255, 255, 255, 0.86);
+            border: 1px solid rgba(19, 32, 43, 0.08);
+            box-shadow: 0 18px 55px rgba(27, 41, 51, 0.12);
+            backdrop-filter: blur(12px);
+        }
+
+        .eyebrow {
+            margin: 0 0 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            font-size: 0.75rem;
+            color: #51636f;
+        }
+
+        h1 {
+            margin: 0 0 12px;
+        }
+
+        p {
+            color: #51636f;
+            line-height: 1.6;
+        }
+
+        .error-text {
+            margin: 18px 0 24px;
+            padding: 16px 18px;
+            border-radius: 18px;
+            background: rgba(182, 61, 61, 0.1);
+            color: #9b2d30;
+            border: 1px solid rgba(182, 61, 61, 0.16);
+        }
+
+        .action-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 12px 18px;
+            border-radius: 999px;
+            border: none;
+            background: linear-gradient(135deg, #c75b12 0%, #963f06 100%);
+            color: #fffaf3;
+            text-decoration: none;
+            font-weight: 600;
+            box-shadow: 0 10px 24px rgba(150, 63, 6, 0.24);
+        }
+    </style>
 </head>
 <body>
-    <div class="container">
-        <header class="header">
+    <main class="error-shell">
+        <header>
+            <p class="eyebrow">KT30</p>
             <h1>❌ Произошла ошибка</h1>
         </header>
-
-        <main class="main-content">
-            <div class="error-container">
-                <div class="error-icon">⚠️</div>
-                <h2>Что-то пошло не так</h2>
-                <p class="error-text">{{ error }}</p>
-                <a href="{{ url_for('index') }}" class="action-btn">
-                    ← Вернуться на главную
-                </a>
-            </div>
-        </main>
-
-        <footer class="footer">
-            <p>© 2024 Technical Specification Analyzer</p>
-        </footer>
-    </div>
+        <p>Standalone frontend не удалось открыть. Проверьте наличие production build и настройки раздачи статики.</p>
+        <p class="error-text">{{ error }}</p>
+        <a href="{{ url_for('index') }}" class="action-btn">Открыть приложение</a>
+    </main>
 </body>
 </html>

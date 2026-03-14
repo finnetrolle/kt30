@@ -139,7 +139,8 @@ def process_analysis_job(
                 "artifacts_dir": tracker.artifacts_dir
             })
 
-        redirect_url = f"/results/{result_id}"
+        frontend_route_prefix = Config.FRONTEND_ROUTE_PREFIX.strip('/') or 'app'
+        redirect_url = f"/{frontend_route_prefix}/results/{result_id}"
         if tracker:
             tracker.complete(redirect_url, result_id, {
                 "artifacts_dir": tracker.artifacts_dir if tracker else None

@@ -77,8 +77,9 @@ The frontend expects the following backend routes to exist:
 ## Notes
 
 - This is an in-repo migration scaffold, not the final production packaging yet.
-- The legacy Flask templates remain available until feature parity is complete.
+- Flask now treats the standalone frontend as the primary UI and keeps `/`, `/login`, and `/results/:id` only as compatibility redirects into `/app`.
 - The upload/progress page now stores `taskId` in the URL search params so an in-flight analysis can be reopened after a refresh.
 - `Vitest` is configured for component and API-client coverage of the standalone frontend flows.
 - `Playwright` now covers the browser-level `login -> upload -> progress -> results` flow against a preview server with mocked API routes.
+- The e2e suite also covers auth failure, cancel flow, missing task recovery, and missing result recovery.
 - The e2e suite currently uses the locally installed Google Chrome channel.

@@ -1,6 +1,6 @@
 import { startTransition, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 
 import { LoginForm } from "@/features/auth/LoginForm";
 import { getSession, login } from "@/shared/api/client";
@@ -9,6 +9,7 @@ import { PageShell } from "@/shared/ui/PageShell";
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const search = useSearch({ from: "/login" });
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
 
@@ -46,6 +47,9 @@ export function LoginPage() {
     return <LoadingState title="Checking session" message="Looking up the current auth state." />;
   }
 
+  const compatibilityError =
+    search.legacyError === "invalid-password" ? "Неверный пароль" : null;
+
   return (
     <PageShell
       title="Sign in"
@@ -57,7 +61,7 @@ export function LoginPage() {
           await loginMutation.mutateAsync(password);
         }}
         isSubmitting={loginMutation.isPending}
-        error={error}
+        error={error ?? compatibilityError}
       />
     </PageShell>
   );

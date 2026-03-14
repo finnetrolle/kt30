@@ -235,6 +235,8 @@ Standalone frontend теперь:
 - умеет восстанавливать `taskId` из URL и повторно подключаться к progress flow после refresh
 - имеет `Vitest`-покрытие для upload, progress, result view и API client
 - имеет `Playwright` e2e для сквозного standalone flow `login -> upload -> progress -> results`
+- покрывает edge-cases нового UI: auth failure, cancel task, missing task/result recovery
+- является основным UI приложения; `/`, `/login` и `/results/<id>` теперь редиректят в standalone frontend
 
 ### Продакшн (с Gunicorn)
 
@@ -320,6 +322,7 @@ make smoke
 ├── ops/                   # Healthcheck scripts и runbook
 ├── deploy/                # Примеры systemd unit-файлов
 ├── .github/workflows/     # CI pipeline
+├── frontend/              # Отдельный React/Vite frontend
 ├── config.py              # Конфигурация
 ├── document_parser.py     # Парсер Word и PDF документов
 ├── openai_client.py       # Клиент OpenAI API
@@ -343,15 +346,7 @@ make smoke
 ├── data/
 │   └── estimation_rules.json # Справочник трудозатрат
 ├── templates/
-│   ├── index.html         # Страница загрузки
-│   ├── results.html       # Страница результатов
 │   └── error.html         # Страница ошибки
-├── static/
-│   ├── css/
-│   │   └── style.css      # Стили
-│   └── js/
-│       ├── main.js        # JavaScript главной страницы
-│       └── results.js     # JavaScript страницы результатов
 └── uploads/               # Папка для загруженных файлов
 ```
 
@@ -437,18 +432,21 @@ ENSEMBLE_ITERATIONS=3
 
 | Endpoint | Method | Описание |
 |----------|--------|----------|
-| `/` | GET | Главная страница с формой загрузки |
-| `/upload` | POST | Загрузка и анализ документа |
-| `/results/<id>` | GET | Просмотр результатов анализа |
+| `/` | GET | Redirect в standalone frontend (`/app/`) |
+| `/app/*` | GET | Основной standalone frontend UI |
+| `/upload` | POST | Совместимый alias загрузки документа |
+| `/api/uploads` | POST | Основной API endpoint загрузки документа |
+| `/results/<id>` | GET | Совместимый redirect в `/app/results/<id>` |
 | `/api/results/<id>` | GET | Получение результатов в JSON |
-| `/export/excel/<id>` | GET | Экспорт в Excel |
+| `/api/results/<id>/export.xlsx` | GET | Основной Excel export endpoint |
+| `/export/excel/<id>` | GET | Совместимый alias Excel export |
 | `/health` | GET | Health check |
 
 ## Поддерживаемые форматы файлов
 
 | Формат | Расширения | Описание |
 |--------|------------|----------|
-| Microsoft Word | .doc, .docx | Полная поддержка |
+| Microsoft Word | .docx | Полная поддержка |
 | PDF | .pdf | Извлечение текста |
 
 ## Лицензия

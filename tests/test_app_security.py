@@ -64,10 +64,7 @@ class AppSecurityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_login_succeeds_with_valid_csrf(self):
-        self.client.get("/")
-
-        with self.client.session_transaction() as sess:
-            csrf_token = sess["_csrf_token"]
+        csrf_token = self.client.get("/api/auth/csrf").get_json()["csrf_token"]
 
         response = self.client.post(
             "/login",
@@ -78,6 +75,7 @@ class AppSecurityTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/app/")
 
     def test_production_config_rejects_default_secret(self):
         class BrokenProductionConfig(TestingConfig):

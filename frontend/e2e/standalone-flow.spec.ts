@@ -6,6 +6,16 @@ interface MockState {
   taskId: string;
   resultId: string;
   taskStatusReads: number;
+  cancelRequested: boolean;
+}
+
+interface MockScenario {
+  initiallyAuthenticated?: boolean;
+  acceptedPassword?: string;
+  taskId?: string;
+  resultId?: string;
+  taskStatusMode?: "happy_path" | "cancelled" | "missing";
+  missingResult?: boolean;
 }
 
 function buildSessionPayload(state: MockState) {
@@ -209,6 +219,10 @@ function buildProgressStream(state: MockState) {
     .join("")}: keepalive\n\n`;
 }
 
+function buildKeepaliveStream() {
+  return ": keepalive\n\n";
+}
+
 async function fulfillJson(route: Route, payload: unknown, status = 200) {
   await route.fulfill({
     status,
@@ -217,14 +231,18 @@ async function fulfillJson(route: Route, payload: unknown, status = 200) {
   });
 }
 
-async function installStandaloneApiMock(page: Page) {
+async function installStandaloneApiMock(page: Page, scenario: MockScenario = {}) {
   const state: MockState = {
-    authenticated: false,
+    authenticated: scenario.initiallyAuthenticated ?? false,
     csrfToken: "csrf-e2e-token",
-    taskId: "task-e2e-1",
-    resultId: "result-e2e-1",
-    taskStatusReads: 0
+    taskId: scenario.taskId ?? "task-e2e-1",
+    resultId: scenario.resultId ?? "result-e2e-1",
+    taskStatusReads: 0,
+    cancelRequested: false
   };
+  const acceptedPassword = scenario.acceptedPassword ?? "secret-password";
+  const taskStatusMode = scenario.taskStatusMode ?? "happy_path";
+  const missingResult = scenario.missingResult ?? false;
 
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -244,7 +262,7 @@ async function installStandaloneApiMock(page: Page) {
 
     if (path === "/api/auth/login" && method === "POST") {
       const payload = request.postDataJSON() as { password?: string } | null;
-      if (payload?.password === "secret-password") {
+      if (payload?.password === acceptedPassword) {
         state.authenticated = true;
         await fulfillJson(route, {
           success: true,
@@ -282,6 +300,33 @@ async function installStandaloneApiMock(page: Page) {
     }
 
     if (path === `/api/tasks/${state.taskId}` && method === "GET") {
+      if (taskStatusMode === "missing") {
+        await fulfillJson(
+          route,
+          {
+            error: "Task not found",
+            status: 404
+          },
+          404
+        );
+        return;
+      }
+
+      if (taskStatusMode === "cancelled") {
+        await fulfillJson(route, {
+          task_id: state.taskId,
+          status: state.cancelRequested ? "canceled" : "running",
+          error: state.cancelRequested ? "Task was canceled by user." : null,
+          result_id: null,
+          worker_id: "worker-e2e",
+          cancel_requested: state.cancelRequested ? 1 : 0,
+          payload: {
+            filename: "specification.pdf"
+          }
+        });
+        return;
+      }
+
       state.taskStatusReads += 1;
       const isCompleted = state.taskStatusReads > 1;
 
@@ -300,6 +345,7 @@ async function installStandaloneApiMock(page: Page) {
     }
 
     if (path === `/api/tasks/${state.taskId}/cancel` && method === "POST") {
+      state.cancelRequested = true;
       await fulfillJson(route, {
         success: true,
         status: "cancel_requested"
@@ -308,6 +354,18 @@ async function installStandaloneApiMock(page: Page) {
     }
 
     if (path === `/api/tasks/${state.taskId}/events` && method === "GET") {
+      if (taskStatusMode === "missing") {
+        await fulfillJson(
+          route,
+          {
+            error: "Task not found",
+            status: 404
+          },
+          404
+        );
+        return;
+      }
+
       await route.fulfill({
         status: 200,
         headers: {
@@ -315,12 +373,24 @@ async function installStandaloneApiMock(page: Page) {
           "Cache-Control": "no-cache",
           Connection: "keep-alive"
         },
-        body: buildProgressStream(state)
+        body: taskStatusMode === "cancelled" ? buildKeepaliveStream() : buildProgressStream(state)
       });
       return;
     }
 
     if (path === `/api/results/${state.resultId}` && method === "GET") {
+      if (missingResult) {
+        await fulfillJson(
+          route,
+          {
+            error: "Result not found",
+            status: 404
+          },
+          404
+        );
+        return;
+      }
+
       await fulfillJson(route, buildResultPayload(state));
       return;
     }
@@ -337,6 +407,31 @@ async function installStandaloneApiMock(page: Page) {
 }
 
 test.describe("standalone frontend flow", () => {
+  test("shows a backend auth error when login fails", async ({ page }) => {
+    await installStandaloneApiMock(page);
+
+    await page.goto("/app/");
+    await expect(page).toHaveURL(/\/app\/login$/);
+
+    await page.getByLabel("Password").fill("wrong-password");
+    await page.getByRole("button", { name: "Sign in" }).click();
+
+    await expect(page).toHaveURL(/\/app\/login$/);
+    await expect(page.getByText("Неверный пароль")).toBeVisible();
+  });
+
+  test("redirects a direct result visit to login when the session is not authenticated", async ({ page }) => {
+    await installStandaloneApiMock(page, {
+      initiallyAuthenticated: false,
+      resultId: "guarded-result"
+    });
+
+    await page.goto("/app/results/guarded-result");
+
+    await expect(page).toHaveURL(/\/app\/login$/);
+    await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  });
+
   test("completes login -> upload -> progress -> results under /app", async ({ page }) => {
     await installStandaloneApiMock(page);
 
@@ -368,5 +463,56 @@ test.describe("standalone frontend flow", () => {
       "href",
       "/api/results/result-e2e-1/export.xlsx"
     );
+  });
+
+  test("lets the user cancel a running task and reflects the durable canceled state", async ({ page }) => {
+    await installStandaloneApiMock(page, {
+      initiallyAuthenticated: true,
+      taskId: "task-cancel-1",
+      taskStatusMode: "cancelled"
+    });
+
+    await page.goto("/app/");
+    await expect(page.getByRole("heading", { name: "Upload and monitor" })).toBeVisible();
+
+    await page.getByLabel(/choose a word or pdf file/i).setInputFiles({
+      name: "specification.pdf",
+      mimeType: "application/pdf",
+      buffer: Buffer.from("%PDF-1.4 mocked spec")
+    });
+    await page.getByRole("button", { name: "Run analysis" }).click();
+
+    await expect(page).toHaveURL(/taskId=task-cancel-1/);
+    await page.getByRole("button", { name: "Cancel task" }).click();
+
+    await expect(page.getByText("Task was canceled by user.")).toBeVisible();
+    await expect(page.getByText(/^canceled$/)).toBeVisible();
+  });
+
+  test("surfaces missing task recovery errors from a resumed URL", async ({ page }) => {
+    await installStandaloneApiMock(page, {
+      initiallyAuthenticated: true,
+      taskId: "missing-task",
+      taskStatusMode: "missing"
+    });
+
+    await page.goto("/app/?taskId=missing-task");
+
+    await expect(page.getByRole("heading", { name: "Upload and monitor" })).toBeVisible();
+    await expect(page.getByText("Task not found")).toBeVisible();
+  });
+
+  test("shows an unavailable state when the backend result is missing", async ({ page }) => {
+    await installStandaloneApiMock(page, {
+      initiallyAuthenticated: true,
+      resultId: "missing-result",
+      missingResult: true
+    });
+
+    await page.goto("/app/results/missing-result");
+
+    await expect(page.getByRole("heading", { name: "Result unavailable" })).toBeVisible();
+    await expect(page.getByText("Could not load result")).toBeVisible();
+    await expect(page.getByText("Result not found")).toBeVisible();
   });
 });

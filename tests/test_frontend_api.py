@@ -115,6 +115,20 @@ class FrontendApiAuthTests(unittest.TestCase):
         self.assertIn("frontend app", response.get_data(as_text=True))
         response.close()
 
+    def test_root_redirects_to_standalone_login_when_auth_is_required(self):
+        response = self.client.get("/", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/app/login")
+        response.close()
+
+    def test_legacy_login_route_redirects_to_standalone_login(self):
+        response = self.client.get("/login", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/app/login")
+        response.close()
+
 
 class FrontendApiConfig(TestingConfig):
     SECRET_KEY = "test-secret-key"
@@ -229,6 +243,17 @@ class FrontendApiTests(unittest.TestCase):
         root_response.close()
         route_response.close()
         asset_response.close()
+
+    def test_root_and_legacy_results_redirect_to_standalone_frontend(self):
+        root_response = self.client.get("/", follow_redirects=False)
+        results_response = self.client.get("/results/result-1", follow_redirects=False)
+
+        self.assertEqual(root_response.status_code, 302)
+        self.assertEqual(root_response.headers["Location"], "/app/")
+        self.assertEqual(results_response.status_code, 302)
+        self.assertEqual(results_response.headers["Location"], "/app/results/result-1")
+        root_response.close()
+        results_response.close()
 
 
 if __name__ == "__main__":

@@ -207,8 +207,8 @@ export function ResultSummary({ payload }: { payload: ResultPayload }) {
             <button type="button" className="secondary-button" onClick={() => window.print()}>
               Print
             </button>
-            <a href={payload.links.legacy_html} className="secondary-button">
-              Open legacy view
+            <a href={payload.links.self} className="secondary-button" target="_blank" rel="noreferrer">
+              Open JSON API
             </a>
           </div>
         </div>

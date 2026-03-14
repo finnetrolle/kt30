@@ -6,7 +6,7 @@ import type { TaskEvent } from "@/entities/task/model";
 import { TaskProgressPanel } from "@/features/task-progress/TaskProgressPanel";
 import { useTaskProgress } from "@/features/task-progress/useTaskProgress";
 import { UploadPanel } from "@/features/upload-spec/UploadPanel";
-import { ApiError, cancelTask, getSession, getTask, logout, uploadFile } from "@/shared/api/client";
+import { ApiError, cancelTask, getSession, getTask, uploadFile } from "@/shared/api/client";
 import { LoadingState } from "@/shared/ui/LoadingState";
 import { PageShell } from "@/shared/ui/PageShell";
 
@@ -63,16 +63,6 @@ export function HomePage() {
     mutationFn: cancelTask,
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["task", taskId] });
-    }
-  });
-
-  const logoutMutation = useMutation({
-    mutationFn: logout,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["session"] });
-      startTransition(() => {
-        void navigate({ to: "/login" });
-      });
     }
   });
 
@@ -152,19 +142,31 @@ export function HomePage() {
     <PageShell
       title="Upload and monitor"
       description="This page talks to the standalone API surface: login, upload, durable task status and resumable SSE progress."
-      actions={
-        sessionQuery.data?.auth_enabled ? (
-          <button
-            type="button"
-            className="secondary-button"
-            onClick={() => void logoutMutation.mutateAsync()}
-            disabled={logoutMutation.isPending}
-          >
-            {logoutMutation.isPending ? "Signing out..." : "Sign out"}
-          </button>
-        ) : null
-      }
     >
+      {taskId ? (
+        <div className="panel subtle-panel">
+          <h2>Resumable task</h2>
+          <p>Keep this URL bookmarked while the analysis is running. The standalone frontend can reopen progress from the `taskId` in the address bar.</p>
+        </div>
+      ) : (
+        <div className="panel subtle-panel">
+          <h2>How it works</h2>
+          <div className="steps-grid">
+            <div className="step-card">
+              <strong>1. Upload the source file</strong>
+              <p>Use a `.docx` or `.pdf` specification up to 16 MB.</p>
+            </div>
+            <div className="step-card">
+              <strong>2. Watch durable progress</strong>
+              <p>The task status survives refreshes and streams live updates over SSE.</p>
+            </div>
+            <div className="step-card">
+              <strong>3. Review the WBS result</strong>
+              <p>Open the generated result, inspect dependencies, then export JSON or Excel.</p>
+            </div>
+          </div>
+        </div>
+      )}
       <UploadPanel
         onUpload={async (file) => {
           setUploadError(null);

@@ -5,11 +5,14 @@ import {
   createRoute,
   createRouter
 } from "@tanstack/react-router";
+import { startTransition } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 
 import { HomePage } from "@/routes/home";
 import { LoginPage } from "@/routes/login";
 import { ResultPage } from "@/routes/result";
+import { getSession, logout } from "@/shared/api/client";
 
 function normalizeRouterBasePath(rawValue: string | undefined) {
   const trimmed = (rawValue ?? "").trim();
@@ -28,7 +31,32 @@ const homeSearchSchema = z.object({
   )
 });
 
+const loginSearchSchema = z.object({
+  legacyError: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() ? value.trim() : undefined),
+    z.string().optional()
+  )
+});
+
 function AppShell() {
+  const navigate = rootRoute.useNavigate();
+  const queryClient = useQueryClient();
+  const sessionQuery = useQuery({
+    queryKey: ["session"],
+    queryFn: getSession
+  });
+  const logoutMutation = useMutation({
+    mutationFn: logout,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["session"] });
+      startTransition(() => {
+        void navigate({ to: "/login" });
+      });
+    }
+  });
+  const authEnabled = sessionQuery.data?.auth_enabled ?? false;
+  const authenticated = sessionQuery.data?.authenticated ?? false;
+
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -42,9 +70,22 @@ function AppShell() {
           <Link to="/" className="nav-link">
             Upload
           </Link>
-          <Link to="/login" className="nav-link">
-            Login
-          </Link>
+          {authEnabled ? (
+            authenticated ? (
+              <button
+                type="button"
+                className="nav-link nav-button"
+                onClick={() => void logoutMutation.mutateAsync()}
+                disabled={logoutMutation.isPending}
+              >
+                {logoutMutation.isPending ? "Signing out..." : "Sign out"}
+              </button>
+            ) : (
+              <Link to="/login" className="nav-link">
+                Login
+              </Link>
+            )
+          ) : null}
         </nav>
       </header>
       <main className="app-main">
@@ -81,6 +122,7 @@ const indexRoute = createRoute({
 const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
+  validateSearch: loginSearchSchema,
   component: LoginPage
 });
 

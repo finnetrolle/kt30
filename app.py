@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file, send_from_directory, session, Response
+from flask import Flask, render_template, request, jsonify, redirect, send_file, send_from_directory, session, Response
 from werkzeug.utils import secure_filename
 from config import Config, get_active_config_class
 from excel_export import export_wbs_to_excel, calculate_project_duration_with_parallel, build_dependencies_matrix
@@ -154,6 +154,24 @@ def create_app(config_class=Config):
             )
         }
 
+    def _standalone_frontend_path(relative_path: str = '') -> str:
+        """Build an absolute path for the standalone frontend."""
+        cleaned = relative_path.strip('/')
+        base_path = f"/{frontend_route_prefix}"
+        return f"{base_path}/{cleaned}" if cleaned else f"{base_path}/"
+
+    def _frontend_entry_response(relative_path: str = ''):
+        """Redirect the user into the standalone frontend or show a build error."""
+        _get_csrf_token()
+        if _frontend_build_available():
+            return redirect(_standalone_frontend_path(relative_path))
+
+        logger.warning("Standalone frontend build is not available in %s", frontend_dist_dir)
+        return render_template(
+            'error.html',
+            error='Standalone frontend build not found. Run npm install && npm run build in frontend/.'
+        ), 404
+
     def _build_result_view_model(result_id: str, result_data: dict) -> dict:
         """Attach computed fields and useful links to a result payload."""
         normalized_payload = _normalize_result_payload(result_id, result_data)
@@ -179,7 +197,7 @@ def create_app(config_class=Config):
             'legacy_html': f"/results/{result_id}",
             'excel_export': f"/api/results/{result_id}/export.xlsx",
             'legacy_excel_export': f"/export/excel/{result_id}",
-            'frontend_html': f"/{frontend_route_prefix}/results/{result_id}"
+            'frontend_html': _standalone_frontend_path(f"results/{result_id}")
         }
 
         return view_model
@@ -220,8 +238,6 @@ def create_app(config_class=Config):
 
         if not _validate_csrf():
             logger.warning("CSRF validation failed for endpoint %s", request.endpoint)
-            if request.endpoint == 'login':
-                return render_template('login.html', error='Сессия устарела. Обновите страницу и попробуйте снова.'), 400
             return jsonify({'error': 'CSRF validation failed', 'status': 400}), 400
 
         return None
@@ -295,30 +311,32 @@ def create_app(config_class=Config):
             
             if not _is_authenticated_session():
                 if request.endpoint == 'index':
-                    return render_template('login.html')
+                    return redirect(_standalone_frontend_path('login'))
+                if request.endpoint == 'results':
+                    return redirect(_standalone_frontend_path('login'))
                 return jsonify({'error': 'Authentication required', 'status': 401}), 401
         
         @app.route('/login', methods=['GET', 'POST'])
         def login():
-            """Handle login."""
+            """Compatibility route that forwards users into the standalone frontend."""
             if request.method == 'GET':
-                return render_template('login.html')
+                return _frontend_entry_response('login')
 
             password = _request_value('password', '')
             if hmac.compare_digest(password, auth_password):
                 _set_authenticated_session()
                 logger.info("User authenticated successfully")
-                return redirect(url_for('index'))
+                return redirect(_standalone_frontend_path())
             else:
                 logger.warning("Failed authentication attempt")
-                return render_template('login.html', error='Неверный пароль'), 401
+                return redirect(f"{_standalone_frontend_path('login')}?legacyError=invalid-password")
 
         @app.route('/logout', methods=['POST'])
         def logout():
             """Clear the current authenticated session."""
             _clear_authenticated_session()
             logger.info("User logged out")
-            return redirect(url_for('index'))
+            return redirect(_standalone_frontend_path('login'))
     else:
         logger.info("Authentication is DISABLED (APP_AUTH_PASSWORD not set)")
 
@@ -356,9 +374,9 @@ def create_app(config_class=Config):
     
     @app.route('/')
     def index():
-        """Render the upload page."""
-        logger.info("Rendering upload page")
-        return render_template('index.html')
+        """Redirect the primary entry point into the standalone frontend."""
+        logger.info("Redirecting root request into standalone frontend")
+        return _frontend_entry_response()
 
     @app.route(f'/{frontend_route_prefix}')
     @app.route(f'/{frontend_route_prefix}/')
@@ -366,11 +384,7 @@ def create_app(config_class=Config):
     def frontend_app(asset_path: str = ''):
         """Serve the built standalone frontend with SPA fallback."""
         if not _frontend_build_available():
-            logger.warning("Standalone frontend build is not available in %s", frontend_dist_dir)
-            return render_template(
-                'error.html',
-                error='Standalone frontend build not found. Run npm install && npm run build in frontend/.'
-            ), 404
+            return _frontend_entry_response()
 
         requested_path = asset_path.strip('/')
         if requested_path and '.' in Path(requested_path).name:
@@ -558,30 +572,9 @@ def create_app(config_class=Config):
     
     @app.route('/results/<result_id>')
     def results(result_id):
-        """Display the analysis results."""
-        logger.info(f"Rendering results page for ID: {result_id}")
-        result_data = _build_result_view_model(result_id, store.get(result_id))
-        
-        if not result_data:
-            logger.warning(f"Result not found for ID: {result_id}")
-            return render_template('error.html', error='Result not found'), 404
-
-        logger.info(f"Results found, rendering page for file: {result_data['filename']}")
-        logger.info(
-            "Calculated duration: %s days (%s weeks)",
-            result_data['calculated_duration']['total_days'],
-            result_data['calculated_duration']['total_weeks']
-        )
-        
-        return render_template('results.html',
-                             result=result_data['result'],
-                             result_id=result_id,
-                             filename=result_data['filename'],
-                             timestamp=result_data['timestamp'],
-                             usage=result_data.get('usage', {}),
-                             metadata=result_data.get('metadata', {}),
-                             token_usage=result_data.get('token_usage', {}),
-                             calculated_duration=result_data['calculated_duration'])
+        """Compatibility route that forwards result links into the standalone frontend."""
+        logger.info("Redirecting legacy results page for ID %s into standalone frontend", result_id)
+        return _frontend_entry_response(f"results/{result_id}")
     
     @app.route('/api/results/<result_id>')
     def api_results(result_id):
