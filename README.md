@@ -197,6 +197,45 @@ python app.py
 
 Приложение будет доступно по адресу: http://localhost:8000
 
+### Отдельный frontend в рамках миграции
+
+В репозитории появился новый React/Vite frontend в каталоге `frontend/`.
+
+Запуск в dev-режиме:
+
+```bash
+cd frontend
+npm install
+npm run dev
+npm test
+npm run test:e2e
+```
+
+По умолчанию frontend будет доступен на `http://localhost:5173` и проксировать API в Flask на `http://localhost:8000`.
+Так как base path синхронизирован с `FRONTEND_ROUTE_PREFIX=app`, открывать его нужно по адресу `http://localhost:5173/app/`.
+
+После сборки frontend можно раздавать через Flask по префиксу `/app`:
+
+```bash
+cd frontend
+npm run build
+```
+
+И включить в `.env`:
+
+```env
+SERVE_FRONTEND_BUILD=true
+FRONTEND_DIST_DIR=frontend/dist
+FRONTEND_ROUTE_PREFIX=app
+```
+
+Standalone frontend теперь:
+
+- собирается с корректным base path для `/app`
+- умеет восстанавливать `taskId` из URL и повторно подключаться к progress flow после refresh
+- имеет `Vitest`-покрытие для upload, progress, result view и API client
+- имеет `Playwright` e2e для сквозного standalone flow `login -> upload -> progress -> results`
+
 ### Продакшн (с Gunicorn)
 
 ```bash

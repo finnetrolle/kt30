@@ -10,7 +10,9 @@ import secrets
 import time
 import uuid
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file, session, Response
+from pathlib import Path
+
+from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file, send_from_directory, session, Response
 from werkzeug.utils import secure_filename
 from config import Config, get_active_config_class
 from excel_export import export_wbs_to_excel, calculate_project_duration_with_parallel, build_dependencies_matrix
@@ -70,6 +72,9 @@ def create_app(config_class=Config):
         app.config['ARTIFACT_RETENTION_SECONDS']
     )
     auth_password = app.config['APP_AUTH_PASSWORD']
+    frontend_route_prefix = app.config['FRONTEND_ROUTE_PREFIX'].strip('/') or 'app'
+    frontend_dist_dir = Path(app.config['FRONTEND_DIST_DIR'])
+    frontend_index_file = frontend_dist_dir / 'index.html'
 
     def _normalize_result_payload(result_id: str, result_data: dict) -> dict:
         """Normalize stored result payloads and recover legacy malformed entries."""
@@ -142,7 +147,11 @@ def create_app(config_class=Config):
             'auth_enabled': bool(auth_password),
             'authenticated': _is_authenticated_session(),
             'csrf_token': _get_csrf_token(),
-            'session_ttl_seconds': int(app.permanent_session_lifetime.total_seconds())
+            'session_ttl_seconds': int(app.permanent_session_lifetime.total_seconds()),
+            'frontend_base_path': f"/{frontend_route_prefix}",
+            'frontend_build_available': bool(
+                app.config['SERVE_FRONTEND_BUILD'] and frontend_index_file.exists()
+            )
         }
 
     def _build_result_view_model(result_id: str, result_data: dict) -> dict:
@@ -169,10 +178,15 @@ def create_app(config_class=Config):
             'self': f"/api/results/{result_id}",
             'legacy_html': f"/results/{result_id}",
             'excel_export': f"/api/results/{result_id}/export.xlsx",
-            'legacy_excel_export': f"/export/excel/{result_id}"
+            'legacy_excel_export': f"/export/excel/{result_id}",
+            'frontend_html': f"/{frontend_route_prefix}/results/{result_id}"
         }
 
         return view_model
+
+    def _frontend_build_available() -> bool:
+        """Return whether the built standalone frontend is available for serving."""
+        return bool(app.config['SERVE_FRONTEND_BUILD'] and frontend_index_file.exists())
 
     def _has_valid_file_signature(uploaded_file) -> bool:
         """Validate the uploaded file signature against the claimed extension."""
@@ -271,6 +285,7 @@ def create_app(config_class=Config):
                 'ready',
                 'login',
                 'static',
+                'frontend_app',
                 'api_auth_session',
                 'api_auth_csrf',
                 'api_login',
@@ -344,6 +359,26 @@ def create_app(config_class=Config):
         """Render the upload page."""
         logger.info("Rendering upload page")
         return render_template('index.html')
+
+    @app.route(f'/{frontend_route_prefix}')
+    @app.route(f'/{frontend_route_prefix}/')
+    @app.route(f'/{frontend_route_prefix}/<path:asset_path>')
+    def frontend_app(asset_path: str = ''):
+        """Serve the built standalone frontend with SPA fallback."""
+        if not _frontend_build_available():
+            logger.warning("Standalone frontend build is not available in %s", frontend_dist_dir)
+            return render_template(
+                'error.html',
+                error='Standalone frontend build not found. Run npm install && npm run build in frontend/.'
+            ), 404
+
+        requested_path = asset_path.strip('/')
+        if requested_path and '.' in Path(requested_path).name:
+            candidate = frontend_dist_dir / requested_path
+            if candidate.exists() and candidate.is_file():
+                return send_from_directory(frontend_dist_dir, requested_path, conditional=True)
+
+        return send_from_directory(frontend_dist_dir, 'index.html', conditional=True)
     
     @app.route('/api/uploads', methods=['POST'])
     @app.route('/upload', methods=['POST'])

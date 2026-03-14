@@ -1,14 +1,28 @@
-import type { TaskEvent } from "@/entities/task/model";
+import type { TaskEvent, TaskLifecycleStatus, TaskStageUsage } from "@/entities/task/model";
 
 interface TaskProgressPanelProps {
   taskId: string | null;
   stage: string;
   events: TaskEvent[];
   totalTokens: number;
+  requestCount: number;
+  elapsedSeconds: number;
+  stageUsage: TaskStageUsage[];
+  jobStatus: TaskLifecycleStatus | null;
   isStreaming: boolean;
   error: string | null;
   onCancel: () => Promise<void> | void;
   isCanceling: boolean;
+}
+
+function formatElapsedTime(seconds: number) {
+  if (seconds < 60) {
+    return `${seconds} sec`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes} min ${remainder} sec`;
 }
 
 export function TaskProgressPanel({
@@ -16,6 +30,10 @@ export function TaskProgressPanel({
   stage,
   events,
   totalTokens,
+  requestCount,
+  elapsedSeconds,
+  stageUsage,
+  jobStatus,
   isStreaming,
   error,
   onCancel,
@@ -57,12 +75,38 @@ export function TaskProgressPanel({
           <strong>{totalTokens}</strong>
         </div>
         <div>
+          <span className="summary-label">Requests</span>
+          <strong>{requestCount}</strong>
+        </div>
+        <div>
+          <span className="summary-label">Elapsed</span>
+          <strong>{formatElapsedTime(elapsedSeconds)}</strong>
+        </div>
+        <div>
           <span className="summary-label">Status</span>
-          <strong>{isStreaming ? "Streaming" : "Idle"}</strong>
+          <strong>{jobStatus ?? (isStreaming ? "streaming" : "idle")}</strong>
         </div>
       </div>
 
       {error ? <p className="error-banner">{error}</p> : null}
+
+      {stageUsage.length > 0 ? (
+        <div className="stage-usage-grid">
+          {stageUsage.map((entry) => (
+            <div key={entry.stage_id} className="task-card">
+              <div className="task-card-header">
+                <strong>Stage {entry.stage_id}</strong>
+                <span className="soft-badge">{entry.usage.total_tokens} tok.</span>
+              </div>
+              <p>{entry.message}</p>
+              <p className="muted-copy">
+                Requests: {entry.request_count} | Prompt: {entry.usage.prompt_tokens} | Completion:{" "}
+                {entry.usage.completion_tokens}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       <div className="event-log">
         {events.length === 0 ? (

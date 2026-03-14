@@ -27,12 +27,18 @@
   - `login`
   - `upload + progress`
   - `results`
+- выполнены `npm install` и production build нового frontend
+- Flask умеет раздавать собранный SPA под отдельным префиксом `/app`
+- production build frontend теперь корректно собирается с base path `/app`
+- upload/progress flow умеет сохранять `taskId` в URL и восстанавливаться после refresh
+- во `frontend/` настроен `Vitest` и добавлены тесты для upload, progress, result view и API client
+- добавлен `Playwright` e2e, который проверяет browser-level flow `login -> upload -> progress -> results` под `/app`
 
 Следующий фокус:
 
 - довести новый frontend до полного feature parity со старым UI
-- установить frontend зависимости и прогнать сборку
-- начать перенос деталей страницы результатов и UX-доработок
+- добавить e2e для edge-cases: cancel, auth failure, broken task/result recovery
+- продумать момент переключения пользователей со старого UI на новый
 
 ## Цель
 

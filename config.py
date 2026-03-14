@@ -122,6 +122,12 @@ class Config:
         'EMBEDDED_WORKER_ENABLED',
         'true' if ENV_NAME == 'development' else 'false'
     ).lower() == 'true'
+    SERVE_FRONTEND_BUILD = os.getenv(
+        'SERVE_FRONTEND_BUILD',
+        'true' if ENV_NAME == 'production' else 'false'
+    ).lower() == 'true'
+    FRONTEND_DIST_DIR = os.getenv('FRONTEND_DIST_DIR', os.path.join('frontend', 'dist'))
+    FRONTEND_ROUTE_PREFIX = os.getenv('FRONTEND_ROUTE_PREFIX', 'app').strip('/') or 'app'
     # Note: .doc (legacy Word format) is NOT supported by python-docx, only .docx
     ALLOWED_EXTENSIONS = {'docx', 'pdf'}
     
@@ -177,6 +183,9 @@ class Config:
         logger.info(f"  - JOB_STALE_AFTER_SECONDS: {cls.JOB_STALE_AFTER_SECONDS}")
         logger.info(f"  - WORKER_POLL_INTERVAL_SECONDS: {cls.WORKER_POLL_INTERVAL_SECONDS}")
         logger.info(f"  - EMBEDDED_WORKER_ENABLED: {cls.EMBEDDED_WORKER_ENABLED}")
+        logger.info(f"  - SERVE_FRONTEND_BUILD: {cls.SERVE_FRONTEND_BUILD}")
+        logger.info(f"  - FRONTEND_DIST_DIR: {cls.FRONTEND_DIST_DIR}")
+        logger.info(f"  - FRONTEND_ROUTE_PREFIX: {cls.FRONTEND_ROUTE_PREFIX}")
         logger.info(f"  - MAX_CONTENT_LENGTH: {cls.MAX_CONTENT_LENGTH} bytes")
         logger.info(f"  - WBS_TEMPLATE_PATH: {cls.WBS_TEMPLATE_PATH}")
 

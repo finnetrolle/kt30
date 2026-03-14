@@ -5,10 +5,28 @@ import {
   createRoute,
   createRouter
 } from "@tanstack/react-router";
+import { z } from "zod";
 
 import { HomePage } from "@/routes/home";
 import { LoginPage } from "@/routes/login";
 import { ResultPage } from "@/routes/result";
+
+function normalizeRouterBasePath(rawValue: string | undefined) {
+  const trimmed = (rawValue ?? "").trim();
+
+  if (!trimmed || trimmed === "/") {
+    return "/";
+  }
+
+  return `/${trimmed.replace(/^\/+|\/+$/g, "")}`;
+}
+
+const homeSearchSchema = z.object({
+  taskId: z.preprocess(
+    (value) => (typeof value === "string" && value.trim() ? value.trim() : undefined),
+    z.string().optional()
+  )
+});
 
 function AppShell() {
   return (
@@ -56,6 +74,7 @@ const rootRoute = createRootRoute({
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  validateSearch: homeSearchSchema,
   component: HomePage
 });
 
@@ -75,6 +94,7 @@ const routeTree = rootRoute.addChildren([indexRoute, loginRoute, resultRoute]);
 
 export const router = createRouter({
   routeTree,
+  basepath: normalizeRouterBasePath(import.meta.env.BASE_URL),
   defaultPreload: "intent"
 });
 

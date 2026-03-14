@@ -1,29 +1,58 @@
 import { startTransition, useEffect, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 
 import type { TaskEvent } from "@/entities/task/model";
 import { TaskProgressPanel } from "@/features/task-progress/TaskProgressPanel";
 import { useTaskProgress } from "@/features/task-progress/useTaskProgress";
 import { UploadPanel } from "@/features/upload-spec/UploadPanel";
-import { cancelTask, getSession, logout, uploadFile } from "@/shared/api/client";
+import { ApiError, cancelTask, getSession, getTask, logout, uploadFile } from "@/shared/api/client";
 import { LoadingState } from "@/shared/ui/LoadingState";
 import { PageShell } from "@/shared/ui/PageShell";
 
 export function HomePage() {
   const navigate = useNavigate();
+  const search = useSearch({ from: "/" });
+  const queryClient = useQueryClient();
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [taskId, setTaskId] = useState<string | null>(null);
+  const [taskError, setTaskError] = useState<string | null>(null);
+  const taskId = search.taskId ?? null;
 
   const sessionQuery = useQuery({
     queryKey: ["session"],
     queryFn: getSession
   });
 
+  const taskStatusQuery = useQuery({
+    queryKey: ["task", taskId],
+    queryFn: () => getTask(taskId ?? ""),
+    enabled: Boolean(taskId),
+    retry: (failureCount, mutationError) => {
+      if (mutationError instanceof ApiError && mutationError.status === 404) {
+        return false;
+      }
+
+      return failureCount < 2;
+    },
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return !status || status === "queued" || status === "running" ? 3000 : false;
+    }
+  });
+
   const uploadMutation = useMutation({
     mutationFn: uploadFile,
     onSuccess: (payload) => {
-      setTaskId(payload.task_id);
+      setTaskError(null);
+      startTransition(() => {
+        void navigate({
+          to: "/",
+          search: (current) => ({
+            ...current,
+            taskId: payload.task_id
+          })
+        });
+      });
     },
     onError: (mutationError) => {
       setUploadError(mutationError instanceof Error ? mutationError.message : "Upload failed");
@@ -31,12 +60,16 @@ export function HomePage() {
   });
 
   const cancelMutation = useMutation({
-    mutationFn: cancelTask
+    mutationFn: cancelTask,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["task", taskId] });
+    }
   });
 
   const logoutMutation = useMutation({
     mutationFn: logout,
-    onSuccess: () => {
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["session"] });
       startTransition(() => {
         void navigate({ to: "/login" });
       });
@@ -45,6 +78,7 @@ export function HomePage() {
 
   const progress = useTaskProgress({
     taskId,
+    enabled: !["succeeded", "failed", "canceled"].includes(taskStatusQuery.data?.status ?? ""),
     onComplete: (event: TaskEvent) => {
       const resultId = event.data.result_id;
       if (typeof resultId !== "string") {
@@ -72,14 +106,52 @@ export function HomePage() {
     }
   }, [navigate, sessionQuery.data]);
 
+  useEffect(() => {
+    if (!taskStatusQuery.data) {
+      return;
+    }
+
+    const restoredResultId = taskStatusQuery.data.result_id;
+
+    if (taskStatusQuery.data.status === "succeeded" && restoredResultId) {
+      startTransition(() => {
+        void navigate({
+          to: "/results/$resultId",
+          params: { resultId: restoredResultId }
+        });
+      });
+      return;
+    }
+
+    if (taskStatusQuery.data.status === "failed") {
+      setTaskError(taskStatusQuery.data.error ?? "Analysis failed.");
+      return;
+    }
+
+    if (taskStatusQuery.data.status === "canceled") {
+      setTaskError(taskStatusQuery.data.error ?? "Task was canceled.");
+      return;
+    }
+
+    setTaskError(null);
+  }, [navigate, taskStatusQuery.data]);
+
   if (sessionQuery.isLoading) {
     return <LoadingState title="Booting frontend" message="Checking backend session and CSRF state." />;
   }
 
+  const progressError =
+    taskError ??
+    (taskStatusQuery.isError
+      ? taskStatusQuery.error instanceof Error
+        ? taskStatusQuery.error.message
+        : "Could not load the durable task status."
+      : progress.error);
+
   return (
     <PageShell
       title="Upload and monitor"
-      description="This page already talks to the new API namespace: login, upload, task status and SSE progress."
+      description="This page talks to the standalone API surface: login, upload, durable task status and resumable SSE progress."
       actions={
         sessionQuery.data?.auth_enabled ? (
           <button
@@ -96,6 +168,7 @@ export function HomePage() {
       <UploadPanel
         onUpload={async (file) => {
           setUploadError(null);
+          setTaskError(null);
           await uploadMutation.mutateAsync(file);
         }}
         isUploading={uploadMutation.isPending}
@@ -106,8 +179,12 @@ export function HomePage() {
         stage={progress.stage}
         events={progress.events}
         totalTokens={progress.totalTokens}
+        requestCount={progress.requestCount}
+        elapsedSeconds={progress.elapsedSeconds}
+        stageUsage={progress.stageUsage}
+        jobStatus={taskStatusQuery.data?.status ?? null}
         isStreaming={progress.isStreaming}
-        error={progress.error}
+        error={progressError}
         isCanceling={cancelMutation.isPending}
         onCancel={async () => {
           if (!taskId) {

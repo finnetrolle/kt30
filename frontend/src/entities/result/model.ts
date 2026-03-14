@@ -108,6 +108,7 @@ export interface ResultPayload {
     legacy_html: string;
     excel_export: string;
     legacy_excel_export: string;
+    frontend_html?: string;
   };
   result: ResultDocument;
 }

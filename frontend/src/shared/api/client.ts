@@ -7,7 +7,9 @@ const sessionSchema = z.object({
   auth_enabled: z.boolean(),
   authenticated: z.boolean(),
   csrf_token: z.string(),
-  session_ttl_seconds: z.number()
+  session_ttl_seconds: z.number(),
+  frontend_base_path: z.string().optional(),
+  frontend_build_available: z.boolean().optional()
 });
 
 const uploadSchema = z.object({
@@ -18,6 +20,16 @@ const uploadSchema = z.object({
 const cancelSchema = z.object({
   success: z.boolean(),
   status: z.string()
+});
+
+const taskStatusSchema = z.object({
+  task_id: z.string(),
+  status: z.string(),
+  error: z.string().nullable().optional(),
+  result_id: z.string().nullable().optional(),
+  worker_id: z.string().nullable().optional(),
+  cancel_requested: z.union([z.boolean(), z.number()]).nullable().optional(),
+  payload: z.record(z.unknown()).optional()
 });
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
@@ -129,7 +141,8 @@ export async function cancelTask(taskId: string) {
 }
 
 export async function getTask(taskId: string) {
-  return apiFetch<TaskStatus>(`/api/tasks/${taskId}`);
+  const payload = await apiFetch(`/api/tasks/${taskId}`);
+  return taskStatusSchema.parse(payload) as TaskStatus;
 }
 
 export async function getResult(resultId: string) {

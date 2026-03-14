@@ -46,3 +46,5 @@ frontend/dist/
 .pytest_cache/
 .coverage
 htmlcov/
+frontend/playwright-report/
+frontend/test-results/
