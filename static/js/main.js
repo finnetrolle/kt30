@@ -22,6 +22,11 @@ document.addEventListener('DOMContentLoaded', function() {
     let elapsedSeconds = 0;
     let stageEntries = new Map();
 
+    function getCsrfToken() {
+        const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+        return csrfMeta ? csrfMeta.getAttribute('content') : '';
+    }
+
     // Drag and drop handlers
     dropZone.addEventListener('dragover', function(e) {
         e.preventDefault();
@@ -125,6 +130,9 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
             const response = await fetch('/upload', {
                 method: 'POST',
+                headers: {
+                    'X-CSRF-Token': getCsrfToken()
+                },
                 body: formData
             });
             

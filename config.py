@@ -3,6 +3,7 @@ Configuration module for the Technical Specification Analyzer application.
 """
 import os
 import logging
+from datetime import timedelta
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -46,11 +47,23 @@ class StabilizationConfig:
 
 class Config:
     """Application configuration class."""
-    
+
+    ENV_NAME = os.getenv('APP_ENV', os.getenv('FLASK_ENV', 'development')).lower()
+
     # Flask configuration
     SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
-    
+    TESTING = False
+    SESSION_COOKIE_HTTPONLY = True
+    SESSION_COOKIE_SAMESITE = os.getenv('SESSION_COOKIE_SAMESITE', 'Lax')
+    SESSION_COOKIE_SECURE = os.getenv(
+        'SESSION_COOKIE_SECURE',
+        'true' if ENV_NAME == 'production' else 'false'
+    ).lower() == 'true'
+    PERMANENT_SESSION_LIFETIME = timedelta(
+        seconds=int(os.getenv('PERMANENT_SESSION_LIFETIME_SECONDS', str(12 * 60 * 60)))
+    )
+
     # Authentication (optional — set APP_AUTH_PASSWORD to enable)
     APP_AUTH_PASSWORD = os.getenv('APP_AUTH_PASSWORD', '')
     
@@ -93,7 +106,12 @@ class Config:
     # File upload configuration
     UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'uploads')
     ARTIFACTS_ROOT = os.getenv('ARTIFACTS_ROOT', 'analysis_runs')
+    RESULTS_STORAGE_DIR = os.getenv('RESULTS_STORAGE_DIR', 'results_data')
+    PROGRESS_STORAGE_DIR = os.getenv('PROGRESS_STORAGE_DIR', 'progress_data')
     MAX_CONTENT_LENGTH = int(os.getenv('MAX_CONTENT_LENGTH', 16 * 1024 * 1024))  # 16MB default
+    RESULT_TTL_SECONDS = int(os.getenv('RESULT_TTL_SECONDS', 24 * 60 * 60))
+    PROGRESS_TTL_SECONDS = int(os.getenv('PROGRESS_TTL_SECONDS', 2 * 60 * 60))
+    ARTIFACT_RETENTION_SECONDS = int(os.getenv('ARTIFACT_RETENTION_SECONDS', 7 * 24 * 60 * 60))
     # Note: .doc (legacy Word format) is NOT supported by python-docx, only .docx
     ALLOWED_EXTENSIONS = {'docx', 'pdf'}
     
@@ -105,31 +123,45 @@ class Config:
     ENSEMBLE_ITERATIONS = StabilizationConfig.ENSEMBLE_ITERATIONS
     ESTIMATION_RULES_PATH = StabilizationConfig.ESTIMATION_RULES_PATH
     
-    @staticmethod
-    def init_app():
+    @classmethod
+    def apply_runtime_overrides(cls, source_cls: type) -> None:
+        """Copy uppercase settings from the selected config into the base Config."""
+        for name in dir(source_cls):
+            if not name.isupper():
+                continue
+            setattr(cls, name, getattr(source_cls, name))
+
+    @classmethod
+    def init_app(cls):
         """Initialize application configuration."""
         logger.info("Initializing application configuration...")
-        
+
         # Log configuration values (masking sensitive data)
         logger.info("Configuration values:")
-        logger.info(f"  - DEBUG: {Config.DEBUG}")
-        logger.info(f"  - OPENAI_API_BASE: {Config.OPENAI_API_BASE}")
-        logger.info(f"  - OPENAI_MODEL: {Config.OPENAI_MODEL}")
-        logger.info(f"  - LLM_PROFILE: {Config.LLM_PROFILE}")
-        logger.info(f"  - SMALL_LLM_MODE: {Config.SMALL_LLM_MODE}")
-        logger.info(f"  - OPENAI_JSON_MODE: {Config.OPENAI_JSON_MODE}")
-        logger.info(f"  - DEFAULT_LLM_MAX_TOKENS: {Config.DEFAULT_LLM_MAX_TOKENS}")
-        logger.info(f"  - LLM_MAX_PARALLEL_REQUESTS: {Config.LLM_MAX_PARALLEL_REQUESTS}")
-        logger.info(f"  - ANALYSIS_CHUNK_CHARS: {Config.ANALYSIS_CHUNK_CHARS}")
-        logger.info(f"  - ENABLE_ANALYSIS_SYNTHESIS_LLM: {Config.ENABLE_ANALYSIS_SYNTHESIS_LLM}")
-        logger.info(f"  - ENABLE_WBS_SKELETON_LLM: {Config.ENABLE_WBS_SKELETON_LLM}")
-        logger.info(f"  - ENABLE_LLM_SEMANTIC_VALIDATION: {Config.ENABLE_LLM_SEMANTIC_VALIDATION}")
-        logger.info(f"  - SMALL_LLM_ONLY_DEV_LLM_TASKS: {Config.SMALL_LLM_ONLY_DEV_LLM_TASKS}")
-        logger.info(f"  - UPLOAD_FOLDER: {Config.UPLOAD_FOLDER}")
-        logger.info(f"  - ARTIFACTS_ROOT: {Config.ARTIFACTS_ROOT}")
-        logger.info(f"  - MAX_CONTENT_LENGTH: {Config.MAX_CONTENT_LENGTH} bytes")
-        logger.info(f"  - WBS_TEMPLATE_PATH: {Config.WBS_TEMPLATE_PATH}")
-        
+        logger.info(f"  - ENV_NAME: {cls.ENV_NAME}")
+        logger.info(f"  - DEBUG: {cls.DEBUG}")
+        logger.info(f"  - OPENAI_API_BASE: {cls.OPENAI_API_BASE}")
+        logger.info(f"  - OPENAI_MODEL: {cls.OPENAI_MODEL}")
+        logger.info(f"  - LLM_PROFILE: {cls.LLM_PROFILE}")
+        logger.info(f"  - SMALL_LLM_MODE: {cls.SMALL_LLM_MODE}")
+        logger.info(f"  - OPENAI_JSON_MODE: {cls.OPENAI_JSON_MODE}")
+        logger.info(f"  - DEFAULT_LLM_MAX_TOKENS: {cls.DEFAULT_LLM_MAX_TOKENS}")
+        logger.info(f"  - LLM_MAX_PARALLEL_REQUESTS: {cls.LLM_MAX_PARALLEL_REQUESTS}")
+        logger.info(f"  - ANALYSIS_CHUNK_CHARS: {cls.ANALYSIS_CHUNK_CHARS}")
+        logger.info(f"  - ENABLE_ANALYSIS_SYNTHESIS_LLM: {cls.ENABLE_ANALYSIS_SYNTHESIS_LLM}")
+        logger.info(f"  - ENABLE_WBS_SKELETON_LLM: {cls.ENABLE_WBS_SKELETON_LLM}")
+        logger.info(f"  - ENABLE_LLM_SEMANTIC_VALIDATION: {cls.ENABLE_LLM_SEMANTIC_VALIDATION}")
+        logger.info(f"  - SMALL_LLM_ONLY_DEV_LLM_TASKS: {cls.SMALL_LLM_ONLY_DEV_LLM_TASKS}")
+        logger.info(f"  - UPLOAD_FOLDER: {cls.UPLOAD_FOLDER}")
+        logger.info(f"  - ARTIFACTS_ROOT: {cls.ARTIFACTS_ROOT}")
+        logger.info(f"  - RESULTS_STORAGE_DIR: {cls.RESULTS_STORAGE_DIR}")
+        logger.info(f"  - PROGRESS_STORAGE_DIR: {cls.PROGRESS_STORAGE_DIR}")
+        logger.info(f"  - RESULT_TTL_SECONDS: {cls.RESULT_TTL_SECONDS}")
+        logger.info(f"  - PROGRESS_TTL_SECONDS: {cls.PROGRESS_TTL_SECONDS}")
+        logger.info(f"  - ARTIFACT_RETENTION_SECONDS: {cls.ARTIFACT_RETENTION_SECONDS}")
+        logger.info(f"  - MAX_CONTENT_LENGTH: {cls.MAX_CONTENT_LENGTH} bytes")
+        logger.info(f"  - WBS_TEMPLATE_PATH: {cls.WBS_TEMPLATE_PATH}")
+
         # Log stabilization configuration
         logger.info("Stabilization configuration:")
         logger.info(f"  - STABILIZATION_MODE: {StabilizationConfig.MODE}")
@@ -140,38 +172,58 @@ class Config:
         logger.info(f"  - ESTIMATION_RULES_PATH: {StabilizationConfig.ESTIMATION_RULES_PATH}")
         
         # Check if API key is set
-        if Config.OPENAI_API_KEY:
-            masked_key = Config.OPENAI_API_KEY[:8] + "..." + Config.OPENAI_API_KEY[-4:] if len(Config.OPENAI_API_KEY) > 12 else "***"
+        if cls.OPENAI_API_KEY:
+            masked_key = cls.OPENAI_API_KEY[:8] + "..." + cls.OPENAI_API_KEY[-4:] if len(cls.OPENAI_API_KEY) > 12 else "***"
             logger.info(f"  - OPENAI_API_KEY: {masked_key} (configured)")
         else:
             logger.warning("  - OPENAI_API_KEY: NOT SET! Application will not work without API key.")
-        
+
+        if cls.ENV_NAME == 'production':
+            if cls.DEBUG:
+                raise RuntimeError("DEBUG must be disabled in production.")
+            if not cls.SECRET_KEY or cls.SECRET_KEY == 'dev-secret-key-change-in-production':
+                raise RuntimeError("SECRET_KEY must be explicitly configured in production.")
+
         # Create upload folder if it doesn't exist
-        if not os.path.exists(Config.UPLOAD_FOLDER):
-            logger.info(f"Creating upload folder: {Config.UPLOAD_FOLDER}")
-            os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
+        if not os.path.exists(cls.UPLOAD_FOLDER):
+            logger.info(f"Creating upload folder: {cls.UPLOAD_FOLDER}")
+            os.makedirs(cls.UPLOAD_FOLDER, exist_ok=True)
             logger.info("Upload folder created")
         else:
-            logger.info(f"Upload folder exists: {Config.UPLOAD_FOLDER}")
+            logger.info(f"Upload folder exists: {cls.UPLOAD_FOLDER}")
 
-        if not os.path.exists(Config.ARTIFACTS_ROOT):
-            logger.info(f"Creating artifacts root: {Config.ARTIFACTS_ROOT}")
-            os.makedirs(Config.ARTIFACTS_ROOT, exist_ok=True)
+        if not os.path.exists(cls.ARTIFACTS_ROOT):
+            logger.info(f"Creating artifacts root: {cls.ARTIFACTS_ROOT}")
+            os.makedirs(cls.ARTIFACTS_ROOT, exist_ok=True)
             logger.info("Artifacts root created")
         else:
-            logger.info(f"Artifacts root exists: {Config.ARTIFACTS_ROOT}")
-        
+            logger.info(f"Artifacts root exists: {cls.ARTIFACTS_ROOT}")
+
+        if not os.path.exists(cls.RESULTS_STORAGE_DIR):
+            logger.info(f"Creating results storage dir: {cls.RESULTS_STORAGE_DIR}")
+            os.makedirs(cls.RESULTS_STORAGE_DIR, exist_ok=True)
+            logger.info("Results storage dir created")
+        else:
+            logger.info(f"Results storage dir exists: {cls.RESULTS_STORAGE_DIR}")
+
+        if not os.path.exists(cls.PROGRESS_STORAGE_DIR):
+            logger.info(f"Creating progress storage dir: {cls.PROGRESS_STORAGE_DIR}")
+            os.makedirs(cls.PROGRESS_STORAGE_DIR, exist_ok=True)
+            logger.info("Progress storage dir created")
+        else:
+            logger.info(f"Progress storage dir exists: {cls.PROGRESS_STORAGE_DIR}")
+
         # Create data folder if it doesn't exist
-        data_folder = os.path.dirname(Config.ESTIMATION_RULES_PATH)
+        data_folder = os.path.dirname(cls.ESTIMATION_RULES_PATH)
         if data_folder and not os.path.exists(data_folder):
             logger.info(f"Creating data folder: {data_folder}")
             os.makedirs(data_folder, exist_ok=True)
             logger.info("Data folder created")
-        
+
         logger.info("Configuration initialization completed")
-    
-    @staticmethod
-    def allowed_file(filename: str) -> bool:
+
+    @classmethod
+    def allowed_file(cls, filename: str) -> bool:
         """Check if the file extension is allowed.
         
         Args:
@@ -183,10 +235,10 @@ class Config:
         if '.' not in filename:
             return False
         extension = filename.rsplit('.', 1)[1].lower()
-        is_allowed = extension in Config.ALLOWED_EXTENSIONS
+        is_allowed = extension in cls.ALLOWED_EXTENSIONS
         logger.debug(f"File extension check: {extension} -> {'allowed' if is_allowed else 'not allowed'}")
         return is_allowed
-    
+
     @staticmethod
     def get_stabilization_config() -> dict:
         """Get stabilization configuration as dictionary.
@@ -208,20 +260,25 @@ class Config:
 
 class DevelopmentConfig(Config):
     """Development configuration."""
+    ENV_NAME = 'development'
     DEBUG = True
 
 
 class ProductionConfig(Config):
     """Production configuration."""
+    ENV_NAME = 'production'
     DEBUG = False
     # Use ensemble_validate for production by default
     STABILIZATION_MODE = os.getenv('STABILIZATION_MODE', 'ensemble_validate')
+    SESSION_COOKIE_SECURE = True
 
 
 class TestingConfig(Config):
     """Testing configuration."""
+    ENV_NAME = 'testing'
     DEBUG = True
     TESTING = True
+    SESSION_COOKIE_SECURE = False
 
 
 # Configuration dictionary

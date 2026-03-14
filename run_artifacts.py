@@ -138,3 +138,40 @@ class RunArtifacts:
                 "payload": payload
             }
         )
+
+
+def cleanup_expired_runs(root_dir: str, retention_seconds: int) -> int:
+    """Remove run artifact directories older than the retention window."""
+    if retention_seconds <= 0:
+        return 0
+
+    root_path = Path(root_dir)
+    if not root_path.exists():
+        return 0
+
+    removed = 0
+    cutoff = datetime.now(timezone.utc).timestamp() - retention_seconds
+
+    for child in root_path.iterdir():
+        if not child.is_dir():
+            continue
+
+        try:
+            mtime = child.stat().st_mtime
+        except OSError as exc:
+            logger.warning("Could not stat artifact directory %s: %s", child, exc)
+            continue
+
+        if mtime >= cutoff:
+            continue
+
+        try:
+            shutil.rmtree(child)
+            removed += 1
+        except OSError as exc:
+            logger.warning("Could not remove artifact directory %s: %s", child, exc)
+
+    if removed:
+        logger.info("Removed %s expired artifact directories from %s", removed, root_path)
+
+    return removed

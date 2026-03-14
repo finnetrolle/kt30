@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <title>Результаты анализа - WBS</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
@@ -11,6 +12,12 @@
         <header class="header">
             <h1>📊 Результаты анализа</h1>
             <p class="subtitle">Work Breakdown Structure на основе технического задания</p>
+            {% if session.get('authenticated') %}
+            <form method="POST" action="{{ url_for('logout') }}" class="session-action">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="action-btn secondary">Выйти</button>
+            </form>
+            {% endif %}
         </header>
 
         <nav class="breadcrumb">

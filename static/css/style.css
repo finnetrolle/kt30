@@ -59,6 +59,10 @@ body {
     margin-bottom: 0.5rem;
 }
 
+.session-action {
+    margin-top: 1rem;
+}
+
 .subtitle {
     color: var(--text-secondary);
     font-size: 1.1rem;

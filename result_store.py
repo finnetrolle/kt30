@@ -34,6 +34,7 @@ class ResultStore:
         """
         self.storage_dir = Path(storage_dir)
         self.ttl_seconds = ttl_seconds
+        self._lock = threading.Lock()
         self._ensure_storage_dir()
         self._start_cleanup_thread()
         logger.info(f"ResultStore initialized: dir={storage_dir}, ttl={ttl_seconds}s")
@@ -91,8 +92,11 @@ class ResultStore:
                 **data
             }
             
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(stored_data, f, ensure_ascii=False, indent=2)
+            temp_path = filepath.with_suffix(".tmp")
+            with self._lock:
+                with open(temp_path, 'w', encoding='utf-8') as f:
+                    json.dump(stored_data, f, ensure_ascii=False, indent=2)
+                os.replace(temp_path, filepath)
             
             logger.info(f"Result saved: {result_id} -> {filepath}")
             return True
@@ -223,6 +227,10 @@ def get_result_store(storage_dir: str = "results_data", ttl_seconds: int = DEFAU
         ResultStore instance
     """
     global _store_instance
-    if _store_instance is None:
+    if (
+        _store_instance is None or
+        str(_store_instance.storage_dir) != str(Path(storage_dir)) or
+        _store_instance.ttl_seconds != ttl_seconds
+    ):
         _store_instance = ResultStore(storage_dir=storage_dir, ttl_seconds=ttl_seconds)
     return _store_instance

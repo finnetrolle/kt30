@@ -1,11 +1,15 @@
 """
-Thread-safe progress tracker for streaming agent activity to the frontend via SSE.
+Thread-safe and filesystem-backed progress tracking for long-running analysis tasks.
 """
+import json
+import logging
+import queue
+import shutil
 import threading
 import time
-import queue
-import logging
-from typing import Optional, Dict, Any
+from pathlib import Path
+from typing import Optional, Dict, Any, List, Tuple
+
 from run_artifacts import RunArtifacts
 
 logger = logging.getLogger(__name__)
@@ -48,54 +52,192 @@ def _merge_usage(target: Dict[str, int], delta: Optional[Dict[str, Any]] = None)
 
 class ProgressTracker:
     """Thread-safe progress tracker for a single analysis task.
-    
-    Stores progress events that can be consumed by an SSE endpoint.
-    Each event has a type, message, and optional metadata.
+
+    Events are stored both in-memory and on disk so SSE consumers can reconnect
+    or land on another Gunicorn worker without losing the task stream.
     """
-    
-    def __init__(self, task_id: str, run_artifacts: Optional[RunArtifacts] = None):
+
+    META_FILENAME = "task_meta.json"
+    EVENTS_FILENAME = "events.ndjson"
+
+    def __init__(
+        self,
+        task_id: str,
+        storage_dir: Optional[Path] = None,
+        run_artifacts: Optional[RunArtifacts] = None,
+        created_at: Optional[float] = None,
+        completed: bool = False,
+        error: bool = False
+    ):
         self.task_id = task_id
         self.run_artifacts = run_artifacts
+        self.storage_dir = Path(storage_dir) if storage_dir else None
+        self.created_at = created_at or time.time()
         self.events: queue.Queue = queue.Queue()
-        self.created_at = time.time()
-        self._completed = False
-        self._error = False
+        self._completed = completed
+        self._error = error
         self._lock = threading.Lock()
         self._current_stage_id = 0
         self._current_stage_message = ""
         self._stage_usage: Dict[int, Dict[str, Any]] = {}
         self._overall_usage = _empty_usage()
         self._request_count = 0
-    
+
+        if self.storage_dir:
+            self.storage_dir.mkdir(parents=True, exist_ok=True)
+            self._persist_state()
+
+    @classmethod
+    def from_existing(cls, task_id: str, storage_dir: Path) -> "ProgressTracker":
+        """Create a tracker from persisted state."""
+        meta_path = Path(storage_dir) / cls.META_FILENAME
+        created_at = time.time()
+        completed = False
+        error = False
+
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r", encoding="utf-8") as handle:
+                    meta = json.load(handle)
+                created_at = float(meta.get("created_at", created_at))
+                completed = bool(meta.get("completed", False))
+                error = bool(meta.get("error", False))
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                logger.warning("Failed to read progress metadata for %s: %s", task_id, exc)
+
+        return cls(
+            task_id=task_id,
+            storage_dir=storage_dir,
+            created_at=created_at,
+            completed=completed,
+            error=error
+        )
+
+    @property
+    def meta_path(self) -> Optional[Path]:
+        if not self.storage_dir:
+            return None
+        return self.storage_dir / self.META_FILENAME
+
+    @property
+    def events_path(self) -> Optional[Path]:
+        if not self.storage_dir:
+            return None
+        return self.storage_dir / self.EVENTS_FILENAME
+
     @property
     def is_finished(self) -> bool:
         return self._completed or self._error
-    
+
+    @property
+    def artifacts_dir(self) -> Optional[str]:
+        """Return the filesystem path of the current run artifact directory."""
+        if self.run_artifacts:
+            return str(self.run_artifacts.base_dir)
+
+        state = self.get_persisted_state()
+        artifacts_dir = state.get("artifacts_dir")
+        return str(artifacts_dir) if artifacts_dir else None
+
+    def _state_payload(self) -> Dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "created_at": self.created_at,
+            "completed": self._completed,
+            "error": self._error,
+            "artifacts_dir": self.artifacts_dir,
+            "updated_at": time.time()
+        }
+
+    def _persist_state(self):
+        """Persist task metadata atomically."""
+        if not self.meta_path:
+            return
+
+        temp_path = self.meta_path.with_suffix(".tmp")
+        payload = self._state_payload()
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        temp_path.replace(self.meta_path)
+
+    def refresh_state(self):
+        """Refresh completion flags from persisted state."""
+        if not self.meta_path or not self.meta_path.exists():
+            return
+
+        try:
+            with open(self.meta_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            self._completed = bool(payload.get("completed", False))
+            self._error = bool(payload.get("error", False))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning("Failed to refresh progress state for %s: %s", self.task_id, exc)
+
+    def get_persisted_state(self) -> Dict[str, Any]:
+        """Read the current persisted task metadata."""
+        if not self.meta_path or not self.meta_path.exists():
+            return {}
+
+        try:
+            with open(self.meta_path, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Failed to load task metadata for %s: %s", self.task_id, exc)
+            return {}
+
+    def _append_persisted_event(self, event: Dict[str, Any]):
+        """Append an event to the persisted NDJSON stream."""
+        if not self.events_path:
+            return
+
+        line = json.dumps(event, ensure_ascii=False, default=str)
+        with open(self.events_path, "a", encoding="utf-8") as handle:
+            handle.write(line)
+            handle.write("\n")
+
+    def read_events_since(self, offset: int = 0) -> Tuple[List[Dict[str, Any]], int]:
+        """Read persisted events after the provided byte offset."""
+        if not self.events_path or not self.events_path.exists():
+            return [], offset
+
+        events: List[Dict[str, Any]] = []
+        new_offset = offset
+
+        with open(self.events_path, "r", encoding="utf-8") as handle:
+            handle.seek(offset)
+            while True:
+                line = handle.readline()
+                if not line:
+                    break
+                new_offset = handle.tell()
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError as exc:
+                    logger.warning("Skipping malformed progress event for %s: %s", self.task_id, exc)
+
+        return events, new_offset
+
     def emit(self, event_type: str, message: str, data: Optional[Dict[str, Any]] = None):
-        """Emit a progress event.
-        
-        Args:
-            event_type: Type of event (stage, agent, info, success, error)
-            message: Human-readable message
-            data: Optional additional data
-        """
+        """Emit and persist a progress event."""
         event = {
             "type": event_type,
             "message": message,
             "timestamp": time.time(),
             "data": data or {}
         }
-        self.events.put(event)
+
+        with self._lock:
+            self.events.put(event)
+            self._append_persisted_event(event)
+            self._persist_state()
+
         if self.run_artifacts:
             self.run_artifacts.record_progress_event(event)
-        logger.debug(f"[ProgressTracker:{self.task_id}] {event_type}: {message}")
 
-    @property
-    def artifacts_dir(self) -> Optional[str]:
-        """Return the filesystem path of the current run artifact directory."""
-        if not self.run_artifacts:
-            return None
-        return str(self.run_artifacts.base_dir)
+        logger.debug("[ProgressTracker:%s] %s: %s", self.task_id, event_type, message)
 
     def record_intermediate(self, stage: str, payload: Any):
         """Persist an intermediate result if artifact storage is available."""
@@ -116,7 +258,7 @@ class ProgressTracker:
         """Write a text artifact for this run."""
         if self.run_artifacts:
             self.run_artifacts.write_text(relative_path, content)
-    
+
     def stage(self, message: str, data: Optional[Dict[str, Any]] = None):
         """Emit a stage change event (major step)."""
         with self._lock:
@@ -137,11 +279,11 @@ class ProgressTracker:
                 "overall_usage": dict(self._overall_usage)
             }
         self.emit("stage", message, stage_data)
-    
+
     def agent(self, agent_name: str, message: str, data: Optional[Dict[str, Any]] = None):
         """Emit an agent activity event."""
         self.emit("agent", message, {"agent": agent_name, **(data or {})})
-    
+
     def info(self, message: str, data: Optional[Dict[str, Any]] = None):
         """Emit an informational event."""
         self.emit("info", message, data)
@@ -214,16 +356,9 @@ class ProgressTracker:
             "usage_summary": self.get_usage_summary(),
             **(data or {})
         })
-    
+
     def get_event(self, timeout: float = 30.0) -> Optional[Dict[str, Any]]:
-        """Get next event, blocking up to timeout seconds.
-        
-        Args:
-            timeout: Max seconds to wait
-            
-        Returns:
-            Event dict or None if timeout
-        """
+        """Get the next in-memory event for same-process consumers."""
         try:
             return self.events.get(timeout=timeout)
         except queue.Empty:
@@ -231,49 +366,110 @@ class ProgressTracker:
 
 
 class ProgressTrackerStore:
-    """Global store for active progress trackers."""
-    
+    """Global store for active progress trackers with disk persistence."""
+
     _instance = None
-    _lock = threading.Lock()
-    
-    def __new__(cls):
+    _instance_lock = threading.Lock()
+
+    def __new__(cls, storage_root: str = "progress_data", ttl_seconds: float = 3600):
         if cls._instance is None:
-            with cls._lock:
+            with cls._instance_lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
-                    cls._instance._trackers: Dict[str, ProgressTracker] = {}
+                    cls._instance._trackers = {}
                     cls._instance._store_lock = threading.Lock()
+                    cls._instance._cleanup_started = False
         return cls._instance
-    
+
+    def __init__(self, storage_root: str = "progress_data", ttl_seconds: float = 3600):
+        storage_root_path = Path(storage_root)
+        if getattr(self, "storage_root", None) != storage_root_path:
+            self._trackers = {}
+        self.storage_root = storage_root_path
+        self.storage_root.mkdir(parents=True, exist_ok=True)
+        self.ttl_seconds = ttl_seconds
+        self._start_cleanup_thread()
+
+    def _start_cleanup_thread(self):
+        if self._cleanup_started:
+            return
+
+        def cleanup_loop():
+            while True:
+                time.sleep(max(60, int(self.ttl_seconds // 4) or 60))
+                try:
+                    self.cleanup()
+                except Exception as exc:
+                    logger.error("Progress cleanup error: %s", exc)
+
+        thread = threading.Thread(target=cleanup_loop, daemon=True)
+        thread.start()
+        self._cleanup_started = True
+
+    def _task_dir(self, task_id: str) -> Path:
+        safe_task_id = "".join(ch for ch in str(task_id) if ch.isalnum() or ch in ("-", "_"))
+        return self.storage_root / safe_task_id
+
     def create(self, task_id: str, run_artifacts: Optional[RunArtifacts] = None) -> ProgressTracker:
-        """Create a new progress tracker for a task."""
-        tracker = ProgressTracker(task_id, run_artifacts=run_artifacts)
+        """Create a new persisted progress tracker for a task."""
+        tracker = ProgressTracker(
+            task_id=task_id,
+            storage_dir=self._task_dir(task_id),
+            run_artifacts=run_artifacts
+        )
         with self._store_lock:
             self._trackers[task_id] = tracker
         return tracker
-    
+
     def get(self, task_id: str) -> Optional[ProgressTracker]:
-        """Get a progress tracker by task ID."""
+        """Get a progress tracker by task ID, even across workers."""
         with self._store_lock:
-            return self._trackers.get(task_id)
-    
+            tracker = self._trackers.get(task_id)
+            if tracker is not None:
+                return tracker
+
+        task_dir = self._task_dir(task_id)
+        if not task_dir.exists():
+            return None
+
+        tracker = ProgressTracker.from_existing(task_id, task_dir)
+        with self._store_lock:
+            self._trackers[task_id] = tracker
+        return tracker
+
     def remove(self, task_id: str):
-        """Remove a progress tracker."""
+        """Drop a tracker from the in-memory cache only."""
         with self._store_lock:
             self._trackers.pop(task_id, None)
-    
-    def cleanup(self, max_age_seconds: float = 3600):
-        """Remove old trackers."""
+
+    def cleanup(self, max_age_seconds: Optional[float] = None):
+        """Remove old persisted trackers and stale cache entries."""
+        max_age = max_age_seconds if max_age_seconds is not None else self.ttl_seconds
         now = time.time()
+
         with self._store_lock:
-            expired = [
-                tid for tid, t in self._trackers.items()
-                if now - t.created_at > max_age_seconds
+            expired_cache = [
+                task_id for task_id, tracker in self._trackers.items()
+                if now - tracker.created_at > max_age
             ]
-            for tid in expired:
-                del self._trackers[tid]
+            for task_id in expired_cache:
+                self._trackers.pop(task_id, None)
+
+        for task_dir in self.storage_root.iterdir():
+            if not task_dir.is_dir():
+                continue
+
+            tracker = ProgressTracker.from_existing(task_dir.name, task_dir)
+            age_seconds = now - tracker.created_at
+            if age_seconds <= max_age:
+                continue
+
+            try:
+                shutil.rmtree(task_dir)
+            except OSError as exc:
+                logger.warning("Failed to remove progress directory %s: %s", task_dir, exc)
 
 
-def get_progress_store() -> ProgressTrackerStore:
+def get_progress_store(storage_root: str = "progress_data", ttl_seconds: float = 3600) -> ProgressTrackerStore:
     """Get the global progress tracker store singleton."""
-    return ProgressTrackerStore()
+    return ProgressTrackerStore(storage_root=storage_root, ttl_seconds=ttl_seconds)

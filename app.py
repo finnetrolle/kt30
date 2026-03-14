@@ -1,13 +1,15 @@
 """
 Flask backend application for Technical Specification Analyzer.
 """
+import hmac
 import os
-import uuid
 import json
 import logging
+import secrets
 import threading
+import time
+import uuid
 from datetime import datetime
-from functools import wraps
 from flask import Flask, render_template, request, jsonify, redirect, url_for, send_file, session, Response
 from werkzeug.utils import secure_filename
 from config import Config, config as app_config
@@ -16,7 +18,7 @@ from openai_client import analyze_specification
 from excel_export import export_wbs_to_excel, calculate_project_duration_with_parallel, build_dependencies_matrix
 from result_store import get_result_store
 from progress_tracker import get_progress_store
-from run_artifacts import RunArtifacts
+from run_artifacts import RunArtifacts, cleanup_expired_runs
 from wbs_utils import canonicalize_wbs_result, has_legacy_root_phases, recover_wbs_from_artifacts
 
 
@@ -42,17 +44,28 @@ def create_app(config_class=Config):
         Configured Flask application
     """
     logger.info("Creating Flask application...")
-    
+
+    Config.apply_runtime_overrides(config_class)
     app = Flask(__name__)
     app.config.from_object(config_class)
-    
+
     # Initialize configuration
     config_class.init_app()
     logger.info("Configuration initialized")
-    
+
     # File-based result storage with TTL cleanup
-    store = get_result_store()
-    progress_store = get_progress_store()
+    store = get_result_store(
+        storage_dir=app.config['RESULTS_STORAGE_DIR'],
+        ttl_seconds=app.config['RESULT_TTL_SECONDS']
+    )
+    progress_store = get_progress_store(
+        storage_root=app.config['PROGRESS_STORAGE_DIR'],
+        ttl_seconds=app.config['PROGRESS_TTL_SECONDS']
+    )
+    cleanup_expired_runs(
+        app.config['ARTIFACTS_ROOT'],
+        app.config['ARTIFACT_RETENTION_SECONDS']
+    )
 
     def _normalize_result_payload(result_id: str, result_data: dict) -> dict:
         """Normalize stored result payloads and recover legacy malformed entries."""
@@ -77,9 +90,76 @@ def create_app(config_class=Config):
             return updated
 
         return result_data
-    
+
+    def _get_csrf_token() -> str:
+        """Get or create the current session CSRF token."""
+        token = session.get('_csrf_token')
+        if not token:
+            token = secrets.token_urlsafe(32)
+            session['_csrf_token'] = token
+        return token
+
+    def _validate_csrf() -> bool:
+        """Validate the CSRF token from a header or form field."""
+        expected_token = session.get('_csrf_token')
+        provided_token = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token')
+        return bool(expected_token and provided_token and hmac.compare_digest(expected_token, provided_token))
+
+    def _has_valid_file_signature(uploaded_file) -> bool:
+        """Validate the uploaded file signature against the claimed extension."""
+        extension = uploaded_file.filename.rsplit('.', 1)[1].lower()
+        header = uploaded_file.stream.read(8)
+        uploaded_file.stream.seek(0)
+
+        if extension == 'pdf':
+            return header.startswith(b'%PDF-')
+
+        if extension == 'docx':
+            return header.startswith((b'PK\x03\x04', b'PK\x05\x06', b'PK\x07\x08'))
+
+        return False
+
+    @app.context_processor
+    def inject_template_globals():
+        """Expose security-related values to templates."""
+        return {
+            'csrf_token': _get_csrf_token()
+        }
+
+    @app.before_request
+    def protect_csrf():
+        """Protect unsafe requests against CSRF."""
+        if request.method in ('GET', 'HEAD', 'OPTIONS'):
+            return None
+
+        if request.endpoint in ('health', 'ready', 'static'):
+            return None
+
+        if not _validate_csrf():
+            logger.warning("CSRF validation failed for endpoint %s", request.endpoint)
+            if request.endpoint == 'login':
+                return render_template('login.html', error='Сессия устарела. Обновите страницу и попробуйте снова.'), 400
+            return jsonify({'error': 'CSRF validation failed'}), 400
+
+        return None
+
+    @app.after_request
+    def add_security_headers(response):
+        """Attach a basic hardening header set to every response."""
+        response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+        response.headers.setdefault('X-Frame-Options', 'DENY')
+        response.headers.setdefault('Referrer-Policy', 'same-origin')
+        response.headers.setdefault(
+            'Content-Security-Policy',
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+        )
+        if app.config['ENV_NAME'] == 'production' and request.is_secure:
+            response.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+        return response
+
     # Optional authentication middleware
-    auth_password = Config.APP_AUTH_PASSWORD
+    auth_password = app.config['APP_AUTH_PASSWORD']
     if auth_password:
         logger.info("Authentication is ENABLED (APP_AUTH_PASSWORD is set)")
         
@@ -87,7 +167,7 @@ def create_app(config_class=Config):
         def check_auth():
             """Check authentication for all routes except health and login."""
             # Skip auth for health check and static files
-            if request.endpoint in ('health', 'login', 'static'):
+            if request.endpoint in ('health', 'ready', 'login', 'static'):
                 return None
             
             if not session.get('authenticated'):
@@ -95,17 +175,28 @@ def create_app(config_class=Config):
                     return render_template('login.html')
                 return jsonify({'error': 'Authentication required'}), 401
         
-        @app.route('/login', methods=['POST'])
+        @app.route('/login', methods=['GET', 'POST'])
         def login():
             """Handle login."""
+            if request.method == 'GET':
+                return render_template('login.html')
+
             password = request.form.get('password', '')
-            if password == auth_password:
+            if hmac.compare_digest(password, auth_password):
+                session.permanent = True
                 session['authenticated'] = True
                 logger.info("User authenticated successfully")
                 return redirect(url_for('index'))
             else:
                 logger.warning("Failed authentication attempt")
                 return render_template('login.html', error='Неверный пароль'), 401
+
+        @app.route('/logout', methods=['POST'])
+        def logout():
+            """Clear the current authenticated session."""
+            session.clear()
+            logger.info("User logged out")
+            return redirect(url_for('index'))
     else:
         logger.info("Authentication is DISABLED (APP_AUTH_PASSWORD not set)")
     
@@ -129,7 +220,8 @@ def create_app(config_class=Config):
         
         try:
             # Parse the document
-            tracker.stage("📄 Парсинг документа...")
+            if tracker:
+                tracker.stage("📄 Парсинг документа...")
             logger.info(f"[{request_id}] Starting document parsing...")
             document_content = parse_document(filepath)
             text_length = len(document_content['raw_text'])
@@ -143,7 +235,8 @@ def create_app(config_class=Config):
             if tracker:
                 tracker.write_json_artifact("parsed_document.json", document_content)
             
-            tracker.info(f"📄 Документ разобран: {text_length} символов, {sections_count} секций, {tables_count} таблиц")
+            if tracker:
+                tracker.info(f"📄 Документ разобран: {text_length} символов, {sections_count} секций, {tables_count} таблиц")
             
             # Prepare text for analysis
             analysis_text = document_content['raw_text']
@@ -167,10 +260,11 @@ def create_app(config_class=Config):
                 )
             
             # Analyze with OpenAI (multi-agent system)
-            tracker.stage("🤖 Запуск мульти-агентного анализа...")
+            if tracker:
+                tracker.stage("🤖 Запуск мульти-агентного анализа...")
             logger.info(f"[{request_id}] Starting OpenAI analysis...")
-            logger.info(f"[{request_id}]   - API Base: {Config.OPENAI_API_BASE}")
-            logger.info(f"[{request_id}]   - Model: {Config.OPENAI_MODEL}")
+            logger.info(f"[{request_id}]   - API Base: {app.config['OPENAI_API_BASE']}")
+            logger.info(f"[{request_id}]   - Model: {app.config['OPENAI_MODEL']}")
             
             result = analyze_specification(analysis_text, request_id=request_id, progress_tracker=tracker)
             
@@ -184,7 +278,8 @@ def create_app(config_class=Config):
                     logger.info(f"[{request_id}] Cleaned up uploaded file")
                 except Exception as cleanup_error:
                     logger.warning(f"[{request_id}] Failed to cleanup file: {cleanup_error}")
-                tracker.error(f"Ошибка анализа: {result['error']}")
+                if tracker:
+                    tracker.error(f"Ошибка анализа: {result['error']}")
                 return
             
             logger.info(f"[{request_id}] OpenAI analysis completed successfully")
@@ -231,9 +326,10 @@ def create_app(config_class=Config):
             # Signal completion with redirect URL
             # We need app context for url_for, so build URL manually
             redirect_url = f"/results/{result_id}"
-            tracker.complete(redirect_url, result_id, {
-                'artifacts_dir': tracker.artifacts_dir if tracker else None
-            })
+            if tracker:
+                tracker.complete(redirect_url, result_id, {
+                    'artifacts_dir': tracker.artifacts_dir if tracker else None
+                })
             
         except Exception as e:
             logger.exception(f"[{request_id}] Unexpected error during background processing: {str(e)}")
@@ -242,7 +338,7 @@ def create_app(config_class=Config):
                     "error": str(e),
                     "request_id": request_id
                 })
-            tracker.error(f"Непредвиденная ошибка: {str(e)}")
+                tracker.error(f"Непредвиденная ошибка: {str(e)}")
     
     @app.route('/upload', methods=['POST'])
     def upload_file():
@@ -264,9 +360,13 @@ def create_app(config_class=Config):
             return jsonify({'error': 'No file selected'}), 400
         
         # Check file extension
-        if not Config.allowed_file(file.filename):
+        if not config_class.allowed_file(file.filename):
             logger.warning(f"[{request_id}] Invalid file type: {file.filename}")
             return jsonify({'error': 'Invalid file type. Please upload a .docx or .pdf file'}), 400
+
+        if not _has_valid_file_signature(file):
+            logger.warning(f"[{request_id}] File signature mismatch: {file.filename}")
+            return jsonify({'error': 'File content does not match the selected extension'}), 400
         
         try:
             # Generate unique filename
@@ -275,7 +375,7 @@ def create_app(config_class=Config):
             task_id = str(uuid.uuid4())[:12]
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             saved_filename = f"{timestamp}_{unique_id}_{filename}"
-            filepath = os.path.join(Config.UPLOAD_FOLDER, saved_filename)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], saved_filename)
             
             # Save the file
             logger.info(f"[{request_id}] Saving file to: {filepath}")
@@ -284,7 +384,7 @@ def create_app(config_class=Config):
             logger.info(f"[{request_id}] File saved successfully. Size: {file_size} bytes")
             
             artifacts = RunArtifacts.create_for_upload(
-                Config.ARTIFACTS_ROOT,
+                app.config['ARTIFACTS_ROOT'],
                 unique_id,
                 filename,
                 filepath,
@@ -344,27 +444,31 @@ def create_app(config_class=Config):
             return jsonify({'error': 'Task not found'}), 404
         
         def generate():
-            """Generate SSE events from the progress tracker."""
+            """Generate SSE events from the persisted progress log."""
+            offset = 0
+            last_keepalive = 0.0
+
             while True:
-                event = tracker.get_event(timeout=30.0)
-                
-                if event is None:
-                    # Send keepalive comment to prevent timeout
-                    yield ": keepalive\n\n"
+                events, offset = tracker.read_events_since(offset)
+
+                if events:
+                    for event in events:
+                        event_data = json.dumps(event, ensure_ascii=False)
+                        yield f"event: {event['type']}\ndata: {event_data}\n\n"
+
+                        if event['type'] in ('complete', 'error'):
+                            progress_store.remove(task_id)
+                            return
+
                     continue
-                
-                event_data = json.dumps(event, ensure_ascii=False)
-                yield f"event: {event['type']}\ndata: {event_data}\n\n"
-                
-                # If this is a terminal event, stop streaming
-                if event['type'] in ('complete', 'error'):
-                    break
-            
-            # Clean up tracker after a delay
-            # (give client time to process the final event)
-            import time
-            time.sleep(5)
-            progress_store.remove(task_id)
+
+                tracker.refresh_state()
+                now = time.time()
+                if now - last_keepalive >= 15:
+                    yield ": keepalive\n\n"
+                    last_keepalive = now
+
+                time.sleep(0.5)
         
         return Response(
             generate(),
@@ -453,7 +557,30 @@ def create_app(config_class=Config):
     @app.route('/health')
     def health():
         """Health check endpoint."""
-        return jsonify({'status': 'healthy'})
+        return jsonify({
+            'status': 'healthy',
+            'environment': app.config['ENV_NAME'],
+            'auth_enabled': bool(app.config['APP_AUTH_PASSWORD'])
+        })
+
+    @app.route('/ready')
+    def ready():
+        """Readiness endpoint with basic dependency checks."""
+        required_dirs = {
+            'uploads': app.config['UPLOAD_FOLDER'],
+            'artifacts': app.config['ARTIFACTS_ROOT'],
+            'progress': app.config['PROGRESS_STORAGE_DIR'],
+            'results': app.config['RESULTS_STORAGE_DIR']
+        }
+        checks = {
+            name: os.path.isdir(path)
+            for name, path in required_dirs.items()
+        }
+        status_code = 200 if all(checks.values()) else 503
+        return jsonify({
+            'status': 'ready' if status_code == 200 else 'degraded',
+            'checks': checks
+        }), status_code
     
     @app.errorhandler(413)
     def too_large(e):
@@ -472,7 +599,8 @@ def create_app(config_class=Config):
 
 
 # Create application instance
-app = create_app()
+_config_name = os.getenv('APP_ENV', os.getenv('FLASK_ENV', 'development')).lower()
+app = create_app(app_config.get(_config_name, Config))
 
 
 if __name__ == '__main__':

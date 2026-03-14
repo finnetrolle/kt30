@@ -17,6 +17,8 @@ uploads/
 
 # Results storage
 results_data/
+progress_data/
+analysis_runs/
 
 # IDE
 .idea/

@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <title>Вход - Анализатор ТЗ</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
@@ -16,6 +17,7 @@
         <main class="main-content">
             <div class="upload-section">
                 <form method="POST" action="{{ url_for('login') }}" class="upload-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <div class="file-input-wrapper">
                         <label for="password" style="display: block; margin-bottom: 10px; font-weight: bold;">Пароль:</label>
                         <input type="password" 
