@@ -1,8 +1,38 @@
 # План миграции на отдельный frontend
 
-Статус: planned
+Статус: in_progress
 
 Дата фиксации: 2026-03-14
+
+## Прогресс на текущий момент
+
+Уже выполнено:
+
+- backend получил headless auth endpoints:
+  - `GET /api/auth/session`
+  - `GET /api/auth/csrf`
+  - `POST /api/auth/login`
+  - `POST /api/auth/logout`
+- upload получил новый alias `POST /api/uploads`
+- SSE получил новый alias `GET /api/tasks/:taskId/events`
+- Excel export получил новый alias `GET /api/results/:resultId/export.xlsx`
+- `/api/results/:resultId` теперь возвращает расширенный view-model с:
+  - `result_id`
+  - `calculated_duration`
+  - `links`
+  - вычисленными полями в `project_info`
+  - `dependencies_matrix`
+- добавлены backend-тесты под новый standalone API контракт
+- создан каталог `frontend/` с React/Vite/TypeScript scaffold и базовыми экранами:
+  - `login`
+  - `upload + progress`
+  - `results`
+
+Следующий фокус:
+
+- довести новый frontend до полного feature parity со старым UI
+- установить frontend зависимости и прогнать сборку
+- начать перенос деталей страницы результатов и UX-доработок
 
 ## Цель
 

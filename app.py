@@ -1,6 +1,7 @@
 """
 Flask backend application for Technical Specification Analyzer.
 """
+import copy
 import hmac
 import os
 import json
@@ -68,6 +69,7 @@ def create_app(config_class=Config):
         app.config['ARTIFACTS_ROOT'],
         app.config['ARTIFACT_RETENTION_SECONDS']
     )
+    auth_password = app.config['APP_AUTH_PASSWORD']
 
     def _normalize_result_payload(result_id: str, result_data: dict) -> dict:
         """Normalize stored result payloads and recover legacy malformed entries."""
@@ -93,6 +95,18 @@ def create_app(config_class=Config):
 
         return result_data
 
+    def _request_json() -> dict:
+        """Safely return the current request JSON payload."""
+        payload = request.get_json(silent=True)
+        return payload if isinstance(payload, dict) else {}
+
+    def _request_value(name: str, default=None):
+        """Read a request value from JSON first, then form data."""
+        payload = _request_json()
+        if name in payload:
+            return payload.get(name, default)
+        return request.form.get(name, default)
+
     def _get_csrf_token() -> str:
         """Get or create the current session CSRF token."""
         token = session.get('_csrf_token')
@@ -104,8 +118,61 @@ def create_app(config_class=Config):
     def _validate_csrf() -> bool:
         """Validate the CSRF token from a header or form field."""
         expected_token = session.get('_csrf_token')
-        provided_token = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token')
+        provided_token = request.headers.get('X-CSRF-Token') or _request_value('csrf_token')
         return bool(expected_token and provided_token and hmac.compare_digest(expected_token, provided_token))
+
+    def _is_authenticated_session() -> bool:
+        """Check whether the current session is authenticated."""
+        if not auth_password:
+            return True
+        return bool(session.get('authenticated'))
+
+    def _set_authenticated_session():
+        """Mark the current session as authenticated."""
+        session.permanent = True
+        session['authenticated'] = True
+
+    def _clear_authenticated_session():
+        """Reset all session state."""
+        session.clear()
+
+    def _auth_session_payload() -> dict:
+        """Build the auth/session payload used by the standalone frontend."""
+        return {
+            'auth_enabled': bool(auth_password),
+            'authenticated': _is_authenticated_session(),
+            'csrf_token': _get_csrf_token(),
+            'session_ttl_seconds': int(app.permanent_session_lifetime.total_seconds())
+        }
+
+    def _build_result_view_model(result_id: str, result_data: dict) -> dict:
+        """Attach computed fields and useful links to a result payload."""
+        normalized_payload = _normalize_result_payload(result_id, result_data)
+        if not normalized_payload:
+            return normalized_payload
+
+        view_model = copy.deepcopy(normalized_payload)
+        result = view_model.setdefault('result', {})
+        wbs_data = result.get('wbs', {}) if result else {}
+
+        duration_info = calculate_project_duration_with_parallel(wbs_data)
+        dependencies_matrix = build_dependencies_matrix(wbs_data)
+
+        project_info = result.setdefault('project_info', {})
+        project_info['calculated_duration_days'] = duration_info['total_days']
+        project_info['calculated_duration_weeks'] = duration_info['total_weeks']
+        result['dependencies_matrix'] = dependencies_matrix
+
+        view_model['result_id'] = result_id
+        view_model['calculated_duration'] = duration_info
+        view_model['links'] = {
+            'self': f"/api/results/{result_id}",
+            'legacy_html': f"/results/{result_id}",
+            'excel_export': f"/api/results/{result_id}/export.xlsx",
+            'legacy_excel_export': f"/export/excel/{result_id}"
+        }
+
+        return view_model
 
     def _has_valid_file_signature(uploaded_file) -> bool:
         """Validate the uploaded file signature against the claimed extension."""
@@ -141,7 +208,7 @@ def create_app(config_class=Config):
             logger.warning("CSRF validation failed for endpoint %s", request.endpoint)
             if request.endpoint == 'login':
                 return render_template('login.html', error='Сессия устарела. Обновите страницу и попробуйте снова.'), 400
-            return jsonify({'error': 'CSRF validation failed'}), 400
+            return jsonify({'error': 'CSRF validation failed', 'status': 400}), 400
 
         return None
 
@@ -162,6 +229,7 @@ def create_app(config_class=Config):
 
     rate_limit_rules = {
         'login': (5, 60),
+        'api_login': (5, 60),
         'upload_file': (10, 60),
         'progress_stream': (120, 60),
         'cancel_task': (20, 60)
@@ -180,7 +248,7 @@ def create_app(config_class=Config):
         result = rate_limiter.check(request.endpoint, rate_key, limit, window)
 
         if not result["allowed"]:
-            response = jsonify({'error': 'Rate limit exceeded'})
+            response = jsonify({'error': 'Rate limit exceeded', 'status': 429})
             response.status_code = 429
             response.headers['Retry-After'] = str(max(1, result["reset_at"] - int(time.time())))
             return response
@@ -188,21 +256,32 @@ def create_app(config_class=Config):
         return None
 
     # Optional authentication middleware
-    auth_password = app.config['APP_AUTH_PASSWORD']
     if auth_password:
         logger.info("Authentication is ENABLED (APP_AUTH_PASSWORD is set)")
         
         @app.before_request
         def check_auth():
             """Check authentication for all routes except health and login."""
+            if request.method == 'OPTIONS':
+                return None
+
             # Skip auth for health check and static files
-            if request.endpoint in ('health', 'ready', 'login', 'static'):
+            if request.endpoint in (
+                'health',
+                'ready',
+                'login',
+                'static',
+                'api_auth_session',
+                'api_auth_csrf',
+                'api_login',
+                'api_logout'
+            ):
                 return None
             
-            if not session.get('authenticated'):
+            if not _is_authenticated_session():
                 if request.endpoint == 'index':
                     return render_template('login.html')
-                return jsonify({'error': 'Authentication required'}), 401
+                return jsonify({'error': 'Authentication required', 'status': 401}), 401
         
         @app.route('/login', methods=['GET', 'POST'])
         def login():
@@ -210,10 +289,9 @@ def create_app(config_class=Config):
             if request.method == 'GET':
                 return render_template('login.html')
 
-            password = request.form.get('password', '')
+            password = _request_value('password', '')
             if hmac.compare_digest(password, auth_password):
-                session.permanent = True
-                session['authenticated'] = True
+                _set_authenticated_session()
                 logger.info("User authenticated successfully")
                 return redirect(url_for('index'))
             else:
@@ -223,11 +301,43 @@ def create_app(config_class=Config):
         @app.route('/logout', methods=['POST'])
         def logout():
             """Clear the current authenticated session."""
-            session.clear()
+            _clear_authenticated_session()
             logger.info("User logged out")
             return redirect(url_for('index'))
     else:
         logger.info("Authentication is DISABLED (APP_AUTH_PASSWORD not set)")
+
+    @app.route('/api/auth/session', methods=['GET'])
+    def api_auth_session():
+        """Return the current auth/session state for the standalone frontend."""
+        return jsonify(_auth_session_payload())
+
+    @app.route('/api/auth/csrf', methods=['GET'])
+    def api_auth_csrf():
+        """Return a CSRF token and ensure a session exists."""
+        return jsonify({'csrf_token': _get_csrf_token()})
+
+    @app.route('/api/auth/login', methods=['POST'])
+    def api_login():
+        """Authenticate the current session for API clients."""
+        if not auth_password:
+            return jsonify({'success': True, **_auth_session_payload()})
+
+        password = _request_value('password', '')
+        if hmac.compare_digest(password, auth_password):
+            _set_authenticated_session()
+            logger.info("API user authenticated successfully")
+            return jsonify({'success': True, **_auth_session_payload()})
+
+        logger.warning("Failed API authentication attempt")
+        return jsonify({'error': 'Неверный пароль', 'status': 401}), 401
+
+    @app.route('/api/auth/logout', methods=['POST'])
+    def api_logout():
+        """Clear the current authenticated session for API clients."""
+        _clear_authenticated_session()
+        logger.info("API user logged out")
+        return jsonify({'success': True, **_auth_session_payload()})
     
     @app.route('/')
     def index():
@@ -235,6 +345,7 @@ def create_app(config_class=Config):
         logger.info("Rendering upload page")
         return render_template('index.html')
     
+    @app.route('/api/uploads', methods=['POST'])
     @app.route('/upload', methods=['POST'])
     def upload_file():
         """Handle file upload — starts background processing and returns task_id."""
@@ -244,7 +355,7 @@ def create_app(config_class=Config):
         # Check if file was uploaded
         if 'file' not in request.files:
             logger.warning(f"[{request_id}] No file provided in request")
-            return jsonify({'error': 'No file provided'}), 400
+            return jsonify({'error': 'No file provided', 'status': 400}), 400
         
         file = request.files['file']
         logger.info(f"[{request_id}] Received file: {file.filename}")
@@ -252,16 +363,16 @@ def create_app(config_class=Config):
         # Check if file was selected
         if file.filename == '':
             logger.warning(f"[{request_id}] No file selected")
-            return jsonify({'error': 'No file selected'}), 400
+            return jsonify({'error': 'No file selected', 'status': 400}), 400
         
         # Check file extension
         if not config_class.allowed_file(file.filename):
             logger.warning(f"[{request_id}] Invalid file type: {file.filename}")
-            return jsonify({'error': 'Invalid file type. Please upload a .docx or .pdf file'}), 400
+            return jsonify({'error': 'Invalid file type. Please upload a .docx or .pdf file', 'status': 400}), 400
 
         if not _has_valid_file_signature(file):
             logger.warning(f"[{request_id}] File signature mismatch: {file.filename}")
-            return jsonify({'error': 'File content does not match the selected extension'}), 400
+            return jsonify({'error': 'File content does not match the selected extension', 'status': 400}), 400
         
         try:
             # Generate unique filename
@@ -333,8 +444,9 @@ def create_app(config_class=Config):
                     os.remove(filepath)
                 except OSError:
                     pass
-            return jsonify({'error': str(e)}), 500
+            return jsonify({'error': str(e), 'status': 500}), 500
     
+    @app.route('/api/tasks/<task_id>/events')
     @app.route('/progress/<task_id>')
     def progress_stream(task_id):
         """SSE endpoint for streaming progress events.
@@ -344,7 +456,7 @@ def create_app(config_class=Config):
         """
         tracker = progress_store.get(task_id)
         if not tracker:
-            return jsonify({'error': 'Task not found'}), 404
+            return jsonify({'error': 'Task not found', 'status': 404}), 404
         
         def generate():
             """Generate SSE events from the persisted progress log."""
@@ -388,7 +500,7 @@ def create_app(config_class=Config):
         """Return the durable status of a queued or running task."""
         job = job_queue.get(task_id)
         if not job:
-            return jsonify({'error': 'Task not found'}), 404
+            return jsonify({'error': 'Task not found', 'status': 404}), 404
         return jsonify(job)
 
     @app.route('/api/tasks/<task_id>/cancel', methods=['POST'])
@@ -396,7 +508,7 @@ def create_app(config_class=Config):
         """Request cancellation for a queued or running task."""
         job = job_queue.request_cancel(task_id)
         if not job:
-            return jsonify({'error': 'Task not found'}), 404
+            return jsonify({'error': 'Task not found', 'status': 404}), 404
 
         if job['status'] == JobStatus.CANCELED:
             tracker = progress_store.get(task_id)
@@ -413,52 +525,42 @@ def create_app(config_class=Config):
     def results(result_id):
         """Display the analysis results."""
         logger.info(f"Rendering results page for ID: {result_id}")
-        result_data = _normalize_result_payload(result_id, store.get(result_id))
+        result_data = _build_result_view_model(result_id, store.get(result_id))
         
         if not result_data:
             logger.warning(f"Result not found for ID: {result_id}")
             return render_template('error.html', error='Result not found'), 404
-        
-        # Calculate actual duration considering parallel execution
-        result = result_data['result']
-        wbs_data = result.get('wbs', {}) if result else {}
-        
-        duration_info = calculate_project_duration_with_parallel(wbs_data)
-        dependencies_matrix = build_dependencies_matrix(wbs_data)
-        
-        # Add calculated duration to project_info if available
-        if 'project_info' in result:
-            result['project_info']['calculated_duration_days'] = duration_info['total_days']
-            result['project_info']['calculated_duration_weeks'] = duration_info['total_weeks']
-        
-        # Add dependencies matrix to result
-        result['dependencies_matrix'] = dependencies_matrix
-        
+
         logger.info(f"Results found, rendering page for file: {result_data['filename']}")
-        logger.info(f"Calculated duration: {duration_info['total_days']} days ({duration_info['total_weeks']} weeks)")
+        logger.info(
+            "Calculated duration: %s days (%s weeks)",
+            result_data['calculated_duration']['total_days'],
+            result_data['calculated_duration']['total_weeks']
+        )
         
         return render_template('results.html',
-                             result=result,
+                             result=result_data['result'],
                              result_id=result_id,
                              filename=result_data['filename'],
                              timestamp=result_data['timestamp'],
                              usage=result_data.get('usage', {}),
                              metadata=result_data.get('metadata', {}),
                              token_usage=result_data.get('token_usage', {}),
-                             calculated_duration=duration_info)
+                             calculated_duration=result_data['calculated_duration'])
     
     @app.route('/api/results/<result_id>')
     def api_results(result_id):
         """API endpoint to get results as JSON."""
         logger.info(f"API request for results ID: {result_id}")
-        result_data = _normalize_result_payload(result_id, store.get(result_id))
+        result_data = _build_result_view_model(result_id, store.get(result_id))
         
         if not result_data:
             logger.warning(f"API: Result not found for ID: {result_id}")
-            return jsonify({'error': 'Result not found'}), 404
+            return jsonify({'error': 'Result not found', 'status': 404}), 404
         
         return jsonify(result_data)
     
+    @app.route('/api/results/<result_id>/export.xlsx')
     @app.route('/export/excel/<result_id>')
     def export_excel(result_id):
         """Export WBS results as Excel file."""
@@ -467,7 +569,7 @@ def create_app(config_class=Config):
         
         if not result_data:
             logger.warning(f"Excel export: Result not found for ID: {result_id}")
-            return jsonify({'error': 'Result not found'}), 404
+            return jsonify({'error': 'Result not found', 'status': 404}), 404
         
         try:
             excel_file, filename = export_wbs_to_excel(result_data['result'])
@@ -481,7 +583,7 @@ def create_app(config_class=Config):
             )
         except Exception as e:
             logger.exception(f"Excel export failed for ID: {result_id}: {str(e)}")
-            return jsonify({'error': f'Failed to generate Excel: {str(e)}'}), 500
+            return jsonify({'error': f'Failed to generate Excel: {str(e)}', 'status': 500}), 500
     
     @app.route('/health')
     def health():
@@ -525,13 +627,13 @@ def create_app(config_class=Config):
     def too_large(e):
         """Handle file too large error."""
         logger.warning(f"File too large error: {e}")
-        return jsonify({'error': 'File is too large. Maximum size is 16MB'}), 413
-    
+        return jsonify({'error': 'File is too large. Maximum size is 16MB', 'status': 413}), 413
+
     @app.errorhandler(500)
     def server_error(e):
         """Handle server error."""
         logger.error(f"Server error: {e}")
-        return jsonify({'error': 'Internal server error'}), 500
+        return jsonify({'error': 'Internal server error', 'status': 500}), 500
 
     if app.config['EMBEDDED_WORKER_ENABLED'] and not app.config.get('TESTING', False):
         embedded_worker = JobWorker(worker_id=f"embedded-{os.getpid()}-{uuid.uuid4().hex[:6]}")
