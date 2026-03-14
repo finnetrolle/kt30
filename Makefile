@@ -1,4 +1,4 @@
-PYTHON ?= python3
+PYTHON ?= $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; else echo python3; fi)
 GUNICORN ?= gunicorn
 APP_ENV ?= development
 PORT ?= 8000
