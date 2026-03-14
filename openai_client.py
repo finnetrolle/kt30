@@ -8,7 +8,7 @@ import time
 from typing import Optional, Dict, Any
 from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
 from config import Config
-from json_utils import extract_json_from_response
+from json_utils import extract_json_from_response, repair_json_text
 
 
 logger = logging.getLogger(__name__)
@@ -130,12 +130,13 @@ JSON:"""
         logger.debug(f"{log_prefix}Response starts with: {text[:300]}...")
         return extract_json_from_response(text, log_prefix=log_prefix)
 
-    def analyze_document(self, document_content: str, request_id: str = None) -> Dict[str, Any]:
+    def analyze_document(self, document_content: str, request_id: str = None, progress_tracker=None) -> Dict[str, Any]:
         """Analyze a technical specification document and generate WBS.
         
         Args:
             document_content: Content of the technical specification document
             request_id: Optional request ID for logging
+            progress_tracker: Optional ProgressTracker for streaming token usage
             
         Returns:
             Dictionary containing the WBS analysis result
@@ -169,6 +170,17 @@ JSON:"""
             if self.json_mode:
                 api_params["response_format"] = {"type": "json_object"}
                 logger.info(f"{log_prefix}Using JSON response format mode")
+
+            llm_request_payload = {
+                "agent": "Single Agent",
+                "request_id": request_id,
+                "model": self.model,
+                "temperature": api_params["temperature"],
+                "max_tokens": api_params["max_tokens"],
+                "expect_json": True,
+                "messages": api_params["messages"],
+                "response_format": api_params.get("response_format")
+            }
             
             # Make API call
             logger.info(f"{log_prefix}Sending request to API...")
@@ -184,10 +196,34 @@ JSON:"""
             logger.info(f"{log_prefix}  - Response length: {len(result_text)} characters")
             
             # Log usage statistics
+            usage_data = {
+                "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+                "completion_tokens": response.usage.completion_tokens if response.usage else 0,
+                "total_tokens": response.usage.total_tokens if response.usage else 0,
+                "elapsed_seconds": round(elapsed_time, 2)
+            }
             if response.usage:
                 logger.info(f"{log_prefix}  - Prompt tokens: {response.usage.prompt_tokens}")
                 logger.info(f"{log_prefix}  - Completion tokens: {response.usage.completion_tokens}")
                 logger.info(f"{log_prefix}  - Total tokens: {response.usage.total_tokens}")
+                if progress_tracker:
+                    progress_tracker.usage(
+                        "Single Agent",
+                        usage_data,
+                        {
+                            "elapsed_seconds": round(elapsed_time, 2),
+                            "model": self.model
+                        }
+                    )
+
+            if progress_tracker:
+                progress_tracker.record_llm_call({
+                    **llm_request_payload,
+                    "status": "success",
+                    "elapsed_seconds": round(elapsed_time, 2),
+                    "usage": usage_data,
+                    "response": result_text
+                })
             
             # Check if response was truncated
             if response.usage and response.usage.completion_tokens >= 7900:
@@ -209,48 +245,96 @@ JSON:"""
             try:
                 result = json.loads(json_text)
             except json.JSONDecodeError as e:
-                logger.error(f"{log_prefix}JSON parse error: {str(e)}")
-                logger.error(f"{log_prefix}JSON text (first 500 chars): {json_text[:500]}")
-                
-                return {
-                    "success": False,
-                    "error": f"Ошибка парсинга JSON: {str(e)}. Модель вернула невалидный JSON.",
-                    "raw_response": result_text[:2000],
-                    "extracted_json": json_text[:1000]
-                }
+                repaired_json = repair_json_text(json_text, log_prefix=log_prefix)
+                if repaired_json is None:
+                    logger.error(f"{log_prefix}JSON parse error: {str(e)}")
+                    logger.error(f"{log_prefix}JSON text (first 500 chars): {json_text[:500]}")
+                    
+                    return {
+                        "success": False,
+                        "error": f"Ошибка парсинга JSON: {str(e)}. Модель вернула невалидный JSON.",
+                        "raw_response": result_text[:2000],
+                        "extracted_json": json_text[:1000]
+                    }
+
+                json_text = repaired_json
+                result = json.loads(json_text)
+                logger.info(f"{log_prefix}JSON repaired after initial parse failure")
             
             logger.info(f"{log_prefix}Document analysis completed successfully")
             
             return {
                 "success": True,
                 "data": result,
-                "usage": {
-                    "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
-                    "completion_tokens": response.usage.completion_tokens if response.usage else 0,
-                    "total_tokens": response.usage.total_tokens if response.usage else 0,
-                    "elapsed_seconds": round(elapsed_time, 2)
+                "usage": usage_data,
+                "metadata": {
+                    "token_usage": {
+                        "totals": {
+                            "prompt_tokens": usage_data["prompt_tokens"],
+                            "completion_tokens": usage_data["completion_tokens"],
+                            "total_tokens": usage_data["total_tokens"]
+                        },
+                        "request_count": 1 if usage_data["total_tokens"] else 0,
+                        "stages": []
+                    }
                 }
             }
             
         except APIConnectionError as e:
+            if progress_tracker:
+                progress_tracker.record_llm_call({
+                    "agent": "Single Agent",
+                    "request_id": request_id,
+                    "model": self.model,
+                    "status": "error",
+                    "error": str(e),
+                    "error_type": "connection"
+                })
             logger.error(f"{log_prefix}Failed to connect to API: {str(e)}")
             return {
                 "success": False,
                 "error": f"Не удалось подключиться к API: {str(e)}"
             }
         except APITimeoutError as e:
+            if progress_tracker:
+                progress_tracker.record_llm_call({
+                    "agent": "Single Agent",
+                    "request_id": request_id,
+                    "model": self.model,
+                    "status": "error",
+                    "error": str(e),
+                    "error_type": "timeout"
+                })
             logger.error(f"{log_prefix}API request timed out: {str(e)}")
             return {
                 "success": False,
                 "error": f"Превышено время ожидания ответа от API: {str(e)}"
             }
         except APIError as e:
+            if progress_tracker:
+                progress_tracker.record_llm_call({
+                    "agent": "Single Agent",
+                    "request_id": request_id,
+                    "model": self.model,
+                    "status": "error",
+                    "error": str(e),
+                    "error_type": "api"
+                })
             logger.error(f"{log_prefix}API error: {str(e)}")
             return {
                 "success": False,
                 "error": f"Ошибка API: {str(e)}"
             }
         except Exception as e:
+            if progress_tracker:
+                progress_tracker.record_llm_call({
+                    "agent": "Single Agent",
+                    "request_id": request_id,
+                    "model": self.model,
+                    "status": "error",
+                    "error": str(e),
+                    "error_type": "unexpected"
+                })
             logger.exception(f"{log_prefix}Unexpected error: {str(e)}")
             return {
                 "success": False,
@@ -317,6 +401,8 @@ def analyze_specification(document_content: str, request_id: str = None,
         
         if result["success"]:
             logger.info(f"{log_prefix}Multi-agent WBS generation successful")
+            token_usage = result.get("metadata", {}).get("token_usage", {})
+            token_totals = token_usage.get("totals", {})
             
             # Log conversation summary
             conversation_summary = orchestrator.get_conversation_summary()
@@ -326,24 +412,49 @@ def analyze_specification(document_content: str, request_id: str = None,
                 "success": True,
                 "data": result["data"],
                 "usage": {
+                    "prompt_tokens": token_totals.get("prompt_tokens", 0),
+                    "completion_tokens": token_totals.get("completion_tokens", 0),
+                    "total_tokens": token_totals.get("total_tokens", 0),
+                    "request_count": token_usage.get("request_count", 0),
                     "elapsed_seconds": result["metadata"]["elapsed_seconds"],
-                    "iterations": result["metadata"]["iterations"],
-                    "agent_system": "multi-agent-v1"
+                    "iterations": result["metadata"].get(
+                        "iterations",
+                        result["metadata"].get("ensemble", {}).get("successful_iterations", 1)
+                    ),
+                    "agent_system": "multi-agent-v2-chunked",
+                    "llm_profile": Config.LLM_PROFILE
                 },
                 "metadata": result["metadata"],
                 "agent_conversation": result.get("agent_conversation", [])
             }
         else:
+            if progress_tracker:
+                progress_tracker.record_intermediate(
+                    "multi_agent_generation_failed",
+                    {
+                        "error": result.get("error"),
+                        "request_id": request_id
+                    }
+                )
             logger.error(f"{log_prefix}Multi-agent WBS generation failed: {result.get('error')}")
             return result
             
     except Exception as e:
         logger.exception(f"{log_prefix}Multi-agent system error: {str(e)}")
+        if progress_tracker:
+            progress_tracker.record_intermediate(
+                "multi_agent_exception",
+                {
+                    "error": str(e),
+                    "request_id": request_id
+                }
+            )
         logger.info(f"{log_prefix}Falling back to single-agent system")
         
         # Fallback to original single-agent approach
         client = OpenAIClient()
-        return client.analyze_document(document_content, request_id=request_id)
-
-
-
+        return client.analyze_document(
+            document_content,
+            request_id=request_id,
+            progress_tracker=progress_tracker
+        )

@@ -7,6 +7,8 @@ import json
 import statistics
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
+from config import Config
+from wbs_utils import canonicalize_wbs_result
 from .base_agent import BaseAgent
 
 logger = logging.getLogger(__name__)
@@ -218,6 +220,7 @@ class ValidatorAgent(BaseAgent):
             ValidationResult with details
         """
         result = ValidationResult()
+        wbs = canonicalize_wbs_result(wbs)
         
         # Check basic structure
         if 'wbs' not in wbs:
@@ -242,6 +245,7 @@ class ValidatorAgent(BaseAgent):
         
         # Calculate confidence score
         result.confidence_score = self._calculate_confidence(result, wbs)
+        self._record_intermediate("validation_completed", result.to_dict())
         
         return result
     
@@ -439,7 +443,7 @@ class ValidatorAgent(BaseAgent):
         """
         import copy
         import math
-        normalized = copy.deepcopy(wbs)
+        normalized = canonicalize_wbs_result(wbs)
         
         min_task = self.estimation_rules['min_hours_per_task']
         max_task = self.estimation_rules['max_hours_per_task']
@@ -600,19 +604,46 @@ class ValidatorAgent(BaseAgent):
         Returns:
             Validation result from LLM
         """
-        import json
-        wbs_json = json.dumps(wbs, ensure_ascii=False, indent=2)
-        
-        message = f"""Проверь следующий WBS на корректность и реалистичность.
+        compact_wbs = {
+            "project_info": wbs.get("project_info", {}),
+            "phases": [
+                {
+                    "id": phase.get("id", ""),
+                    "name": phase.get("name", ""),
+                    "estimated_hours": phase.get("estimated_hours", 0),
+                    "work_packages": [
+                        {
+                            "id": wp.get("id", ""),
+                            "name": wp.get("name", ""),
+                            "estimated_hours": wp.get("estimated_hours", 0),
+                            "tasks_count": len(wp.get("tasks", [])),
+                            "task_names": [task.get("name", "") for task in wp.get("tasks", [])[:6]]
+                        }
+                        for wp in phase.get("work_packages", [])[:10]
+                    ]
+                }
+                for phase in wbs.get("wbs", {}).get("phases", [])
+            ],
+            "risks": wbs.get("risks", [])[:5],
+            "assumptions": wbs.get("assumptions", [])[:10]
+        }
+
+        message = f"""Проверь следующий компактный срез WBS на корректность и реалистичность.
 
 ВЕРНИ ТОЛЬКО JSON БЕЗ КАКИХ-ЛИБО ДОПОЛНИТЕЛЬНЫХ КОММЕНТАРИЕВ.
 
 WBS:
-{wbs_json}
+{json.dumps(compact_wbs, ensure_ascii=False, indent=2)}
 
 JSON:"""
         
-        result = self.send_message(message, expect_json=True)
+        result = self.send_message(
+            message,
+            expect_json=True,
+            use_history=False,
+            max_tokens=Config.VALIDATION_MAX_TOKENS,
+            temperature=0.0
+        )
         
         if result["success"]:
             return {

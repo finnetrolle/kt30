@@ -59,6 +59,64 @@
                 </div>
             </section>
 
+            {% if token_usage and token_usage.totals is defined %}
+            <section class="result-section token-stats-section">
+                <h2>🧮 Статистика по токенам</h2>
+                <div class="token-summary-grid">
+                    <div class="token-stat-card">
+                        <span class="token-stat-label">Всего токенов</span>
+                        <span class="token-stat-value">{{ token_usage.totals.total_tokens or 0 }}</span>
+                    </div>
+                    <div class="token-stat-card">
+                        <span class="token-stat-label">Входные токены</span>
+                        <span class="token-stat-value">{{ token_usage.totals.prompt_tokens or 0 }}</span>
+                    </div>
+                    <div class="token-stat-card">
+                        <span class="token-stat-label">Выходные токены</span>
+                        <span class="token-stat-value">{{ token_usage.totals.completion_tokens or 0 }}</span>
+                    </div>
+                    <div class="token-stat-card">
+                        <span class="token-stat-label">LLM-запросов</span>
+                        <span class="token-stat-value">{{ token_usage.request_count or 0 }}</span>
+                    </div>
+                </div>
+
+                <div class="token-summary-meta">
+                    <span>Профиль модели: {{ usage.llm_profile or 'Не указан' }}</span>
+                    <span>Режим: {{ usage.agent_system or 'single-agent' }}</span>
+                    <span>Итераций: {{ usage.iterations or 1 }}</span>
+                    <span>Время анализа: {{ usage.elapsed_seconds or 0 }} сек</span>
+                </div>
+
+                {% if token_usage.stages %}
+                <div class="token-stages-table-wrap">
+                    <table class="token-stages-table">
+                        <thead>
+                            <tr>
+                                <th>Этап</th>
+                                <th>Всего</th>
+                                <th>Вход</th>
+                                <th>Выход</th>
+                                <th>Запросов</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for stage in token_usage.stages %}
+                            <tr>
+                                <td>{{ stage.message }}</td>
+                                <td>{{ stage.usage.total_tokens or 0 }}</td>
+                                <td>{{ stage.usage.prompt_tokens or 0 }}</td>
+                                <td>{{ stage.usage.completion_tokens or 0 }}</td>
+                                <td>{{ stage.request_count or 0 }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% endif %}
+            </section>
+            {% endif %}
+
             <!-- WBS Phases Section -->
             {% if result.wbs and result.wbs.phases %}
             <section class="result-section wbs-section">

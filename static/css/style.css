@@ -255,6 +255,25 @@ body {
     font-size: 0.9rem;
 }
 
+.progress-panel-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.progress-total-tokens {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    background: rgba(79, 70, 229, 0.12);
+    color: #4338ca;
+    font-size: 0.78rem;
+    font-weight: 700;
+    font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
+    white-space: nowrap;
+}
+
 .progress-elapsed {
     font-size: 0.8rem;
     color: #6366f1;
@@ -286,6 +305,7 @@ body {
     gap: 0.75rem;
     padding: 0.25rem 1rem;
     animation: logSlideIn 0.2s ease;
+    align-items: center;
 }
 
 @keyframes logSlideIn {
@@ -303,6 +323,20 @@ body {
 .progress-log-text {
     color: #334155;
     word-break: break-word;
+    flex: 1;
+}
+
+.progress-token-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.18rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(79, 70, 229, 0.12);
+    color: #4338ca;
+    font-size: 0.72rem;
+    font-weight: 700;
+    font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
+    white-space: nowrap;
 }
 
 /* Stage entries — bold, highlighted */
@@ -452,6 +486,81 @@ body {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
     gap: 1rem;
+}
+
+.token-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.token-stat-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: linear-gradient(180deg, #f8fbff 0%, #eef4ff 100%);
+}
+
+.token-stat-label {
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.token-stat-value {
+    font-size: 1.55rem;
+    font-weight: 700;
+    color: #1d4ed8;
+    line-height: 1.1;
+}
+
+.token-summary-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.token-summary-meta span {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.35rem 0.65rem;
+    border-radius: 999px;
+    background: var(--background-color);
+    border: 1px solid var(--border-color);
+}
+
+.token-stages-table-wrap {
+    overflow-x: auto;
+}
+
+.token-stages-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+}
+
+.token-stages-table th,
+.token-stages-table td {
+    padding: 0.75rem;
+    text-align: left;
+    border: 1px solid var(--border-color);
+}
+
+.token-stages-table th {
+    background: #dbeafe;
+    color: #1e3a8a;
+    font-weight: 600;
+}
+
+.token-stages-table tr:nth-child(even) {
+    background: var(--background-color);
 }
 
 .info-item {
@@ -1056,6 +1165,17 @@ body {
     .action-btn {
         width: 100%;
         justify-content: center;
+    }
+
+    .progress-panel-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+
+    .progress-panel-meta {
+        width: 100%;
+        justify-content: space-between;
     }
     
     .deps-table {

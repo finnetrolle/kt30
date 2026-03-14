@@ -13,6 +13,7 @@ from .validator_agent import ValidatorAgent, ValidationResult
 from .result_stabilizer import ResultStabilizer, EstimationRules, EnsembleGenerator
 from .base_agent import AgentEventLogger
 from progress_tracker import ProgressTracker
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,8 @@ class AgentOrchestrator:
         }
         self.conversation_log.append(entry)
         logger.info(f"[Orchestrator] {agent_name}: {action}")
+        if self._progress:
+            self._progress.record_intermediate("orchestrator_conversation_step", entry)
     
     def _check_requirements_coverage(self, analysis: Dict[str, Any],
                                       wbs: Dict[str, Any]) -> Dict[str, Any]:
@@ -254,6 +257,7 @@ class AgentOrchestrator:
             }
         
         analysis = analysis_result["analysis"]
+        analysis_pipeline_metadata = analysis_result.get("metadata", {})
         
         # Log analyst completion
         self.event_logger.log_agent_completed(
@@ -322,6 +326,7 @@ class AgentOrchestrator:
             }
         
         wbs = wbs_result["wbs"]
+        planning_pipeline_metadata = wbs_result.get("metadata", {})
         
         # Log planner completion
         phases_count = len(wbs.get("wbs", {}).get("phases", []))
@@ -459,17 +464,20 @@ class AgentOrchestrator:
                 })
             
             # LLM-based semantic validation
-            try:
-                llm_validation = self.validator.validate_with_llm(wbs)
-                if llm_validation.get("success"):
-                    self._log_conversation("Validator", "llm_validation_complete", {
-                        "result": "success"
-                    })
-                    logger.info("✅ LLM-валидация WBS завершена успешно")
-                else:
-                    logger.warning(f"⚠️ LLM-валидация не удалась: {llm_validation.get('error')}")
-            except Exception as e:
-                logger.warning(f"⚠️ LLM-валидация пропущена из-за ошибки: {e}")
+            if Config.ENABLE_LLM_SEMANTIC_VALIDATION:
+                try:
+                    llm_validation = self.validator.validate_with_llm(wbs)
+                    if llm_validation.get("success"):
+                        self._log_conversation("Validator", "llm_validation_complete", {
+                            "result": "success"
+                        })
+                        logger.info("✅ LLM-валидация WBS завершена успешно")
+                    else:
+                        logger.warning(f"⚠️ LLM-валидация не удалась: {llm_validation.get('error')}")
+                except Exception as e:
+                    logger.warning(f"⚠️ LLM-валидация пропущена из-за ошибки: {e}")
+            else:
+                logger.info("ℹ️ LLM-валидация отключена текущим профилем модели")
             
             self.event_logger.log_agent_completed(
                 self.validator.name,
@@ -477,6 +485,15 @@ class AgentOrchestrator:
             )
         
         elapsed_time = time.time() - start_time
+        token_usage = self._progress.get_usage_summary() if self._progress else {
+            "totals": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            },
+            "request_count": 0,
+            "stages": []
+        }
         
         # ============================================================
         # FINAL: Build result
@@ -506,6 +523,7 @@ class AgentOrchestrator:
                 "elapsed_seconds": round(elapsed_time, 2),
                 "iterations": iteration + 1,
                 "stabilization_mode": mode,
+                "llm_profile": Config.LLM_PROFILE,
                 "analysis_summary": {
                     "project_name": analysis.get("project_info", {}).get("project_name", ""),
                     "complexity": analysis.get("project_info", {}).get("complexity_level", ""),
@@ -521,19 +539,34 @@ class AgentOrchestrator:
                     "total": coverage_result["total"],
                     "covered": coverage_result["covered_count"],
                     "uncovered": coverage_result["uncovered"]
-                }
+                },
+                "analysis_pipeline": analysis_pipeline_metadata,
+                "planning_pipeline": planning_pipeline_metadata,
+                "token_usage": token_usage
             },
             "agent_conversation": self.conversation_log
         }
         
         if validation_result:
             result["validation"] = validation_result.to_dict()
+            if self._progress:
+                self._progress.write_json_artifact("validation_result.json", result["validation"])
         
         self._log_conversation("Orchestrator", "generation_complete", {
             "elapsed_seconds": elapsed_time,
             "iterations": iteration + 1,
             "mode": mode
         })
+        if self._progress:
+            self._progress.write_json_artifact("agent_conversation.json", self.conversation_log)
+            self._progress.record_intermediate(
+                "orchestrator_result",
+                {
+                    "mode": mode,
+                    "metadata": result["metadata"],
+                    "validation": result.get("validation")
+                }
+            )
         
         return result
     
@@ -559,6 +592,9 @@ class AgentOrchestrator:
         # Create fresh agents for thread safety
         analyst = AnalystAgent()
         planner = PlannerAgent()
+        if self._progress:
+            analyst.set_progress_tracker(self._progress, stream_events=False)
+            planner.set_progress_tracker(self._progress, stream_events=False)
         
         # Step 1: Analyst
         analysis_result = analyst.analyze_specification(document_content)
@@ -584,7 +620,20 @@ class AgentOrchestrator:
                 wbs = wbs_result["wbs"]
                 validation = planner.validate_wbs(wbs)
             iteration += 1
-        
+
+        if self._progress:
+            self._progress.record_intermediate(
+                "ensemble_iteration_completed",
+                {
+                    "iteration_num": iteration_num,
+                    "refinement_iterations": iteration,
+                    "wbs_summary": {
+                        "phases": len(wbs.get("wbs", {}).get("phases", [])),
+                        "total_hours": wbs.get("project_info", {}).get("total_estimated_hours", 0)
+                    }
+                }
+            )
+
         return {"success": True, "data": wbs}
     
     def _generate_with_ensemble(self, document_content: str, max_iterations: int,
@@ -658,6 +707,15 @@ class AgentOrchestrator:
                 final_wbs = self.validator.normalize_wbs(final_wbs)
         
         elapsed_time = time.time() - start_time
+        token_usage = self._progress.get_usage_summary() if self._progress else {
+            "totals": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            },
+            "request_count": 0,
+            "stages": []
+        }
         
         # ============================================================
         # Build final result
@@ -676,6 +734,7 @@ class AgentOrchestrator:
             "data": final_wbs,
             "metadata": {
                 "elapsed_seconds": round(elapsed_time, 2),
+                "iterations": len(results),
                 "stabilization_mode": mode,
                 "ensemble": {
                     "total_iterations": self.ensemble_iterations,
@@ -685,13 +744,27 @@ class AgentOrchestrator:
                 "wbs_summary": {
                     "phases": len(final_wbs.get('wbs', {}).get('phases', [])),
                     "total_hours": final_wbs.get('project_info', {}).get('total_estimated_hours', 0)
-                }
+                },
+                "token_usage": token_usage
             },
             "agent_conversation": self.conversation_log
         }
         
         if validation_result:
             result["validation"] = validation_result.to_dict()
+            if self._progress:
+                self._progress.write_json_artifact("validation_result.json", result["validation"])
+
+        if self._progress:
+            self._progress.write_json_artifact("agent_conversation.json", self.conversation_log)
+            self._progress.record_intermediate(
+                "orchestrator_result",
+                {
+                    "mode": mode,
+                    "metadata": result["metadata"],
+                    "validation": result.get("validation")
+                }
+            )
         
         return result
     

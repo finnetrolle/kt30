@@ -15,10 +15,12 @@ document.addEventListener('DOMContentLoaded', function() {
     const progressLog = document.getElementById('progressLog');
     const progressStage = document.getElementById('progressStage');
     const progressElapsed = document.getElementById('progressElapsed');
+    const progressTotalTokens = document.getElementById('progressTotalTokens');
     
     let selectedFile = null;
     let elapsedTimer = null;
     let elapsedSeconds = 0;
+    let stageEntries = new Map();
 
     // Drag and drop handlers
     dropZone.addEventListener('dragover', function(e) {
@@ -149,7 +151,9 @@ document.addEventListener('DOMContentLoaded', function() {
         progressPanel.style.display = 'block';
         progressLog.innerHTML = '';
         elapsedSeconds = 0;
+        stageEntries = new Map();
         progressElapsed.textContent = '0 сек';
+        progressTotalTokens.textContent = '0 ток.';
         
         elapsedTimer = setInterval(function() {
             elapsedSeconds++;
@@ -181,29 +185,38 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Handle stage events (major steps)
         eventSource.addEventListener('stage', function(e) {
-            const data = JSON.parse(e.data);
-            progressStage.textContent = data.message;
-            addLogEntry(data.message, 'stage');
+            const payload = JSON.parse(e.data);
+            progressStage.textContent = payload.message;
+            addLogEntry(payload.message, 'stage', payload);
+            updateTotalTokens(payload);
         });
         
         // Handle agent events
         eventSource.addEventListener('agent', function(e) {
-            const data = JSON.parse(e.data);
-            addLogEntry(data.message, 'agent');
+            const payload = JSON.parse(e.data);
+            addLogEntry(payload.message, 'agent', payload);
         });
         
         // Handle info events
         eventSource.addEventListener('info', function(e) {
-            const data = JSON.parse(e.data);
-            addLogEntry(data.message, 'info');
+            const payload = JSON.parse(e.data);
+            addLogEntry(payload.message, 'info', payload);
+        });
+
+        // Handle token usage updates without adding extra noise to the log
+        eventSource.addEventListener('usage', function(e) {
+            const payload = JSON.parse(e.data);
+            updateStageUsage(payload);
+            updateTotalTokens(payload);
         });
         
         // Handle completion
         eventSource.addEventListener('complete', function(e) {
             const data = JSON.parse(e.data);
             stopElapsedTimer();
-            addLogEntry('✅ ' + data.message, 'complete');
+            addLogEntry('✅ ' + data.message, 'complete', data);
             progressStage.textContent = '✅ Анализ завершён! Перенаправление...';
+            updateTotalTokens(data);
             
             // Remove spinner from header
             const spinnerEl = progressPanel.querySelector('.spinner-small');
@@ -223,8 +236,9 @@ document.addEventListener('DOMContentLoaded', function() {
         eventSource.addEventListener('error_event', function(e) {
             const data = JSON.parse(e.data);
             stopElapsedTimer();
-            addLogEntry('❌ ' + data.message, 'error');
+            addLogEntry('❌ ' + data.message, 'error', data);
             progressStage.textContent = '❌ Ошибка';
+            updateTotalTokens(data);
             
             // Remove spinner from header
             const spinnerEl = progressPanel.querySelector('.spinner-small');
@@ -251,8 +265,9 @@ document.addEventListener('DOMContentLoaded', function() {
         eventSource.addEventListener('error', function(e) {
             const data = JSON.parse(e.data);
             stopElapsedTimer();
-            addLogEntry('❌ ' + data.message, 'error');
+            addLogEntry('❌ ' + data.message, 'error', data);
             progressStage.textContent = '❌ Ошибка';
+            updateTotalTokens(data);
             
             const spinnerEl = progressPanel.querySelector('.spinner-small');
             if (spinnerEl) {
@@ -268,7 +283,7 @@ document.addEventListener('DOMContentLoaded', function() {
     /**
      * Add a log entry to the progress panel
      */
-    function addLogEntry(message, type) {
+    function addLogEntry(message, type, payload) {
         const entry = document.createElement('div');
         entry.className = 'progress-log-entry progress-log-' + type;
         
@@ -283,10 +298,54 @@ document.addEventListener('DOMContentLoaded', function() {
         
         entry.appendChild(time);
         entry.appendChild(text);
+
+        if (type === 'stage' && payload && payload.data && payload.data.stage_id) {
+            entry.dataset.stageId = String(payload.data.stage_id);
+            const tokenBadge = document.createElement('span');
+            tokenBadge.className = 'progress-token-badge';
+            tokenBadge.textContent = formatTokenBadge(0);
+            entry.appendChild(tokenBadge);
+            stageEntries.set(String(payload.data.stage_id), entry);
+        }
+
         progressLog.appendChild(entry);
         
         // Auto-scroll to bottom
         progressLog.scrollTop = progressLog.scrollHeight;
+    }
+
+    function updateStageUsage(payload) {
+        const stageId = payload && payload.data ? payload.data.stage_id : null;
+        if (!stageId) {
+            return;
+        }
+
+        const entry = stageEntries.get(String(stageId));
+        if (!entry) {
+            return;
+        }
+
+        const badge = entry.querySelector('.progress-token-badge');
+        if (!badge) {
+            return;
+        }
+
+        const totalTokens = payload.data.stage_usage && payload.data.stage_usage.total_tokens
+            ? payload.data.stage_usage.total_tokens
+            : 0;
+        badge.textContent = formatTokenBadge(totalTokens);
+    }
+
+    function updateTotalTokens(payload) {
+        const data = payload && payload.data ? payload.data : {};
+        const usageSummary = data.usage_summary || null;
+        const overallUsage = data.overall_usage || (usageSummary ? usageSummary.totals : null);
+        const totalTokens = overallUsage && overallUsage.total_tokens ? overallUsage.total_tokens : 0;
+        progressTotalTokens.textContent = formatTokenBadge(totalTokens);
+    }
+
+    function formatTokenBadge(totalTokens) {
+        return (totalTokens || 0).toLocaleString('ru-RU') + ' ток.';
     }
 
     /**

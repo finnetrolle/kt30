@@ -16,6 +16,8 @@ from openai_client import analyze_specification
 from excel_export import export_wbs_to_excel, calculate_project_duration_with_parallel, build_dependencies_matrix
 from result_store import get_result_store
 from progress_tracker import get_progress_store
+from run_artifacts import RunArtifacts
+from wbs_utils import canonicalize_wbs_result, has_legacy_root_phases, recover_wbs_from_artifacts
 
 
 # Configure logging
@@ -51,6 +53,30 @@ def create_app(config_class=Config):
     # File-based result storage with TTL cleanup
     store = get_result_store()
     progress_store = get_progress_store()
+
+    def _normalize_result_payload(result_id: str, result_data: dict) -> dict:
+        """Normalize stored result payloads and recover legacy malformed entries."""
+        if not result_data:
+            return result_data
+
+        raw_result = result_data.get('result', {})
+        normalized_result = canonicalize_wbs_result(raw_result)
+
+        if has_legacy_root_phases(raw_result):
+            recovered = recover_wbs_from_artifacts(result_data.get('artifacts_dir'))
+            if recovered:
+                logger.info("Recovered full WBS from artifacts for result ID: %s", result_id)
+                normalized_result = recovered
+            else:
+                logger.warning("Legacy result detected for %s but artifacts recovery failed", result_id)
+
+        if normalized_result != raw_result:
+            updated = dict(result_data)
+            updated['result'] = normalized_result
+            store.save(result_id, updated)
+            return updated
+
+        return result_data
     
     # Optional authentication middleware
     auth_password = Config.APP_AUTH_PASSWORD
@@ -113,20 +139,32 @@ def create_app(config_class=Config):
             logger.info(f"[{request_id}]   - Text length: {text_length} characters")
             logger.info(f"[{request_id}]   - Sections found: {sections_count}")
             logger.info(f"[{request_id}]   - Tables found: {tables_count}")
+
+            if tracker:
+                tracker.write_json_artifact("parsed_document.json", document_content)
             
             tracker.info(f"📄 Документ разобран: {text_length} символов, {sections_count} секций, {tables_count} таблиц")
             
             # Prepare text for analysis
             analysis_text = document_content['raw_text']
             
-            # Add structure information if available
+            # Add only a compact outline to avoid duplicating the full document content.
             if document_content['structure']['sections']:
-                analysis_text += "\n\nСтруктура документа:\n"
+                analysis_text += "\n\nОглавление документа:\n"
                 for section in document_content['structure']['sections']:
                     indent = "  " * (section['level'] - 1)
                     analysis_text += f"{indent}{section['title']}\n"
-                    if section['content']:
-                        analysis_text += f"{indent}  {section['content'][:200]}...\n"
+
+            if tracker:
+                tracker.write_text_artifact("analysis_input.txt", analysis_text)
+                tracker.record_intermediate(
+                    "document_prepared_for_analysis",
+                    {
+                        "text_length": len(analysis_text),
+                        "sections_count": sections_count,
+                        "tables_count": tables_count
+                    }
+                )
             
             # Analyze with OpenAI (multi-agent system)
             tracker.stage("🤖 Запуск мульти-агентного анализа...")
@@ -138,6 +176,8 @@ def create_app(config_class=Config):
             
             if not result['success']:
                 logger.error(f"[{request_id}] OpenAI analysis failed: {result['error']}")
+                if tracker:
+                    tracker.write_json_artifact("analysis_error.json", result)
                 # Clean up uploaded file
                 try:
                     os.remove(filepath)
@@ -150,6 +190,8 @@ def create_app(config_class=Config):
             logger.info(f"[{request_id}] OpenAI analysis completed successfully")
             if 'usage' in result:
                 logger.info(f"[{request_id}] Token usage: {result['usage']}")
+            token_usage = result.get('metadata', {}).get('token_usage', {})
+            normalized_result = canonicalize_wbs_result(result.get('data', {}))
             
             # Clean up uploaded file
             try:
@@ -163,19 +205,43 @@ def create_app(config_class=Config):
             store.save(result_id, {
                 'filename': filename,
                 'timestamp': datetime.now().isoformat(),
-                'result': result['data'],
-                'usage': result.get('usage', {})
+                'result': normalized_result,
+                'usage': result.get('usage', {}),
+                'metadata': result.get('metadata', {}),
+                'agent_conversation': result.get('agent_conversation', []),
+                'token_usage': token_usage,
+                'artifacts_dir': tracker.artifacts_dir if tracker else None
             })
+
+            if tracker:
+                tracker.write_json_artifact("final_result.json", {
+                    'filename': filename,
+                    'timestamp': datetime.now().isoformat(),
+                    'result': normalized_result,
+                    'usage': result.get('usage', {}),
+                    'metadata': result.get('metadata', {}),
+                    'agent_conversation': result.get('agent_conversation', []),
+                    'token_usage': token_usage,
+                    'result_id': result_id,
+                    'artifacts_dir': tracker.artifacts_dir
+                })
             
             logger.info(f"[{request_id}] Analysis result stored with ID: {result_id}")
             
             # Signal completion with redirect URL
             # We need app context for url_for, so build URL manually
             redirect_url = f"/results/{result_id}"
-            tracker.complete(redirect_url, result_id)
+            tracker.complete(redirect_url, result_id, {
+                'artifacts_dir': tracker.artifacts_dir if tracker else None
+            })
             
         except Exception as e:
             logger.exception(f"[{request_id}] Unexpected error during background processing: {str(e)}")
+            if tracker:
+                tracker.write_json_artifact("background_error.json", {
+                    "error": str(e),
+                    "request_id": request_id
+                })
             tracker.error(f"Непредвиденная ошибка: {str(e)}")
     
     @app.route('/upload', methods=['POST'])
@@ -206,6 +272,7 @@ def create_app(config_class=Config):
             # Generate unique filename
             filename = secure_filename(file.filename)
             unique_id = str(uuid.uuid4())
+            task_id = str(uuid.uuid4())[:12]
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             saved_filename = f"{timestamp}_{unique_id}_{filename}"
             filepath = os.path.join(Config.UPLOAD_FOLDER, saved_filename)
@@ -216,10 +283,34 @@ def create_app(config_class=Config):
             file_size = os.path.getsize(filepath)
             logger.info(f"[{request_id}] File saved successfully. Size: {file_size} bytes")
             
+            artifacts = RunArtifacts.create_for_upload(
+                Config.ARTIFACTS_ROOT,
+                unique_id,
+                filename,
+                filepath,
+                metadata={
+                    "task_id": task_id,
+                    "request_id": request_id,
+                    "saved_upload_path": filepath,
+                    "saved_filename": saved_filename,
+                    "file_size": file_size
+                }
+            )
+
             # Create progress tracker
-            task_id = str(uuid.uuid4())[:12]
-            tracker = progress_store.create(task_id)
+            tracker = progress_store.create(task_id, run_artifacts=artifacts)
             tracker.info(f"📁 Файл «{filename}» загружен ({file_size} байт)")
+            tracker.record_intermediate(
+                "upload_saved",
+                {
+                    "filename": filename,
+                    "saved_filename": saved_filename,
+                    "file_size": file_size,
+                    "request_id": request_id,
+                    "task_id": task_id,
+                    "artifacts_dir": tracker.artifacts_dir
+                }
+            )
             
             # Start background processing
             thread = threading.Thread(
@@ -289,7 +380,7 @@ def create_app(config_class=Config):
     def results(result_id):
         """Display the analysis results."""
         logger.info(f"Rendering results page for ID: {result_id}")
-        result_data = store.get(result_id)
+        result_data = _normalize_result_payload(result_id, store.get(result_id))
         
         if not result_data:
             logger.warning(f"Result not found for ID: {result_id}")
@@ -319,13 +410,15 @@ def create_app(config_class=Config):
                              filename=result_data['filename'],
                              timestamp=result_data['timestamp'],
                              usage=result_data.get('usage', {}),
+                             metadata=result_data.get('metadata', {}),
+                             token_usage=result_data.get('token_usage', {}),
                              calculated_duration=duration_info)
     
     @app.route('/api/results/<result_id>')
     def api_results(result_id):
         """API endpoint to get results as JSON."""
         logger.info(f"API request for results ID: {result_id}")
-        result_data = store.get(result_id)
+        result_data = _normalize_result_payload(result_id, store.get(result_id))
         
         if not result_data:
             logger.warning(f"API: Result not found for ID: {result_id}")
@@ -337,7 +430,7 @@ def create_app(config_class=Config):
     def export_excel(result_id):
         """Export WBS results as Excel file."""
         logger.info(f"Excel export request for results ID: {result_id}")
-        result_data = store.get(result_id)
+        result_data = _normalize_result_payload(result_id, store.get(result_id))
         
         if not result_data:
             logger.warning(f"Excel export: Result not found for ID: {result_id}")

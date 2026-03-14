@@ -58,13 +58,41 @@ class Config:
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
     OPENAI_API_BASE = os.getenv('OPENAI_API_BASE', 'https://api.openai.com/v1')
     OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4')
+    LLM_PROFILE = os.getenv('LLM_PROFILE', 'default').lower()
+    SMALL_LLM_MODE = LLM_PROFILE == 'small'
     
     # Set to True if using OpenAI API (supports json_object response format)
     # Set to False if using other LLM APIs (like local LLM servers)
     OPENAI_JSON_MODE = os.getenv('OPENAI_JSON_MODE', 'true').lower() == 'true'
+    DEFAULT_LLM_MAX_TOKENS = int(os.getenv('DEFAULT_LLM_MAX_TOKENS', '6000' if SMALL_LLM_MODE else '16000'))
+    LLM_MAX_PARALLEL_REQUESTS = int(os.getenv('LLM_MAX_PARALLEL_REQUESTS', '2' if SMALL_LLM_MODE else '4'))
+    ANALYSIS_CHUNK_CHARS = int(os.getenv('ANALYSIS_CHUNK_CHARS', '3500' if SMALL_LLM_MODE else '6000'))
+    ANALYSIS_CHUNK_MAX_TOKENS = int(os.getenv('ANALYSIS_CHUNK_MAX_TOKENS', '1500' if SMALL_LLM_MODE else '3000'))
+    ANALYSIS_SYNTHESIS_MAX_TOKENS = int(os.getenv('ANALYSIS_SYNTHESIS_MAX_TOKENS', '2500' if SMALL_LLM_MODE else '5000'))
+    WBS_SKELETON_MAX_TOKENS = int(os.getenv('WBS_SKELETON_MAX_TOKENS', '2500' if SMALL_LLM_MODE else '5000'))
+    WBS_TASKS_MAX_TOKENS = int(os.getenv('WBS_TASKS_MAX_TOKENS', '1400' if SMALL_LLM_MODE else '2500'))
+    WBS_REFINEMENT_MAX_TOKENS = int(os.getenv('WBS_REFINEMENT_MAX_TOKENS', '2500' if SMALL_LLM_MODE else '5000'))
+    VALIDATION_MAX_TOKENS = int(os.getenv('VALIDATION_MAX_TOKENS', '1500' if SMALL_LLM_MODE else '3000'))
+    ENABLE_ANALYSIS_SYNTHESIS_LLM = os.getenv(
+        'ENABLE_ANALYSIS_SYNTHESIS_LLM',
+        'false' if SMALL_LLM_MODE else 'true'
+    ).lower() == 'true'
+    ENABLE_WBS_SKELETON_LLM = os.getenv(
+        'ENABLE_WBS_SKELETON_LLM',
+        'false' if SMALL_LLM_MODE else 'true'
+    ).lower() == 'true'
+    ENABLE_LLM_SEMANTIC_VALIDATION = os.getenv(
+        'ENABLE_LLM_SEMANTIC_VALIDATION',
+        'false' if SMALL_LLM_MODE else 'true'
+    ).lower() == 'true'
+    SMALL_LLM_ONLY_DEV_LLM_TASKS = os.getenv(
+        'SMALL_LLM_ONLY_DEV_LLM_TASKS',
+        'true' if SMALL_LLM_MODE else 'false'
+    ).lower() == 'true'
     
     # File upload configuration
     UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'uploads')
+    ARTIFACTS_ROOT = os.getenv('ARTIFACTS_ROOT', 'analysis_runs')
     MAX_CONTENT_LENGTH = int(os.getenv('MAX_CONTENT_LENGTH', 16 * 1024 * 1024))  # 16MB default
     # Note: .doc (legacy Word format) is NOT supported by python-docx, only .docx
     ALLOWED_EXTENSIONS = {'docx', 'pdf'}
@@ -87,8 +115,18 @@ class Config:
         logger.info(f"  - DEBUG: {Config.DEBUG}")
         logger.info(f"  - OPENAI_API_BASE: {Config.OPENAI_API_BASE}")
         logger.info(f"  - OPENAI_MODEL: {Config.OPENAI_MODEL}")
+        logger.info(f"  - LLM_PROFILE: {Config.LLM_PROFILE}")
+        logger.info(f"  - SMALL_LLM_MODE: {Config.SMALL_LLM_MODE}")
         logger.info(f"  - OPENAI_JSON_MODE: {Config.OPENAI_JSON_MODE}")
+        logger.info(f"  - DEFAULT_LLM_MAX_TOKENS: {Config.DEFAULT_LLM_MAX_TOKENS}")
+        logger.info(f"  - LLM_MAX_PARALLEL_REQUESTS: {Config.LLM_MAX_PARALLEL_REQUESTS}")
+        logger.info(f"  - ANALYSIS_CHUNK_CHARS: {Config.ANALYSIS_CHUNK_CHARS}")
+        logger.info(f"  - ENABLE_ANALYSIS_SYNTHESIS_LLM: {Config.ENABLE_ANALYSIS_SYNTHESIS_LLM}")
+        logger.info(f"  - ENABLE_WBS_SKELETON_LLM: {Config.ENABLE_WBS_SKELETON_LLM}")
+        logger.info(f"  - ENABLE_LLM_SEMANTIC_VALIDATION: {Config.ENABLE_LLM_SEMANTIC_VALIDATION}")
+        logger.info(f"  - SMALL_LLM_ONLY_DEV_LLM_TASKS: {Config.SMALL_LLM_ONLY_DEV_LLM_TASKS}")
         logger.info(f"  - UPLOAD_FOLDER: {Config.UPLOAD_FOLDER}")
+        logger.info(f"  - ARTIFACTS_ROOT: {Config.ARTIFACTS_ROOT}")
         logger.info(f"  - MAX_CONTENT_LENGTH: {Config.MAX_CONTENT_LENGTH} bytes")
         logger.info(f"  - WBS_TEMPLATE_PATH: {Config.WBS_TEMPLATE_PATH}")
         
@@ -111,16 +149,23 @@ class Config:
         # Create upload folder if it doesn't exist
         if not os.path.exists(Config.UPLOAD_FOLDER):
             logger.info(f"Creating upload folder: {Config.UPLOAD_FOLDER}")
-            os.makedirs(Config.UPLOAD_FOLDER)
+            os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
             logger.info("Upload folder created")
         else:
             logger.info(f"Upload folder exists: {Config.UPLOAD_FOLDER}")
+
+        if not os.path.exists(Config.ARTIFACTS_ROOT):
+            logger.info(f"Creating artifacts root: {Config.ARTIFACTS_ROOT}")
+            os.makedirs(Config.ARTIFACTS_ROOT, exist_ok=True)
+            logger.info("Artifacts root created")
+        else:
+            logger.info(f"Artifacts root exists: {Config.ARTIFACTS_ROOT}")
         
         # Create data folder if it doesn't exist
         data_folder = os.path.dirname(Config.ESTIMATION_RULES_PATH)
         if data_folder and not os.path.exists(data_folder):
             logger.info(f"Creating data folder: {data_folder}")
-            os.makedirs(data_folder)
+            os.makedirs(data_folder, exist_ok=True)
             logger.info("Data folder created")
         
         logger.info("Configuration initialization completed")

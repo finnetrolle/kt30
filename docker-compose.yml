@@ -8,6 +8,7 @@ services:
     volumes:
       - uploads_data:/app/uploads
       - results_data:/app/results_data
+      - analysis_runs_data:/app/analysis_runs
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
@@ -15,3 +16,4 @@ services:
 volumes:
   uploads_data:
   results_data:
+  analysis_runs_data:

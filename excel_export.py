@@ -10,6 +10,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.chart import BarChart, Reference
 from openpyxl.chart.series import DataPoint
 from openpyxl.chart.label import DataLabelList
+from wbs_utils import canonicalize_wbs_result
 
 logger = logging.getLogger(__name__)
 
@@ -406,7 +407,8 @@ def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
     wb = Workbook()
     
     # Get WBS data
-    wbs_data = result_data.get('wbs', {}) if result_data else {}
+    normalized_result = canonicalize_wbs_result(result_data)
+    wbs_data = normalized_result.get('wbs', {}) if normalized_result else {}
     
     # Extract roles and work items
     all_roles = extract_all_roles(wbs_data)
