@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-import type { ResultPayload } from "@/entities/result/model";
-import type { TaskStatus } from "@/entities/task/model";
+import type { ResultHistoryList, ResultPayload } from "@/entities/result/model";
+import type { ActiveTaskList, TaskStatus } from "@/entities/task/model";
 
 const sessionSchema = z.object({
   auth_enabled: z.boolean(),
@@ -29,7 +29,89 @@ const taskStatusSchema = z.object({
   result_id: z.string().nullable().optional(),
   worker_id: z.string().nullable().optional(),
   cancel_requested: z.union([z.boolean(), z.number()]).nullable().optional(),
+  filename: z.string().nullable().optional(),
+  file_size: z.number().nullable().optional(),
+  current_stage: z.string().nullable().optional(),
+  current_stage_id: z.number().nullable().optional(),
+  request_count: z.number().optional(),
+  total_tokens: z.number().optional(),
+  created_at: z.number().optional(),
+  updated_at: z.number().optional(),
+  started_at: z.number().nullable().optional(),
+  finished_at: z.number().nullable().optional(),
   payload: z.record(z.unknown()).optional()
+});
+
+const activeTaskSchema = z.object({
+  task_id: z.string(),
+  status: z.string(),
+  error: z.string().nullable().optional(),
+  result_id: z.string().nullable().optional(),
+  worker_id: z.string().nullable().optional(),
+  cancel_requested: z.union([z.boolean(), z.number()]).nullable().optional().transform((value) => Boolean(value)),
+  filename: z.string().nullable().optional(),
+  file_size: z.number().nullable().optional(),
+  request_id: z.string().nullable().optional(),
+  current_stage: z.string().nullable().optional(),
+  current_stage_id: z.number().nullable().optional(),
+  request_count: z.number().default(0),
+  total_tokens: z.number().default(0),
+  created_at: z.number(),
+  updated_at: z.number(),
+  started_at: z.number().nullable().optional(),
+  finished_at: z.number().nullable().optional(),
+  artifacts_dir: z.string().nullable().optional()
+});
+
+const activeTaskListSchema = z.object({
+  scope: z.string(),
+  generated_at: z.string(),
+  counts: z.object({
+    total: z.number(),
+    queued: z.number(),
+    running: z.number(),
+    cancel_requested: z.number()
+  }),
+  items: z.array(activeTaskSchema),
+  recent_results: z.array(activeTaskSchema).default([])
+});
+
+const resultHistoryEntrySchema = z.object({
+  result_id: z.string(),
+  stored_at: z.number().nullable().optional(),
+  timestamp: z.string(),
+  filename: z.string(),
+  project_name: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  complexity_level: z.string().nullable().optional(),
+  calculated_duration: z.object({
+    total_days: z.number(),
+    total_weeks: z.number(),
+    phase_durations: z.record(z.number()).optional()
+  }),
+  token_usage: z.object({
+    totals: z
+      .object({
+        total_tokens: z.number().optional(),
+        prompt_tokens: z.number().optional(),
+        completion_tokens: z.number().optional()
+      })
+      .optional(),
+    request_count: z.number().optional()
+  }),
+  links: z.object({
+    self: z.string(),
+    legacy_html: z.string(),
+    excel_export: z.string(),
+    legacy_excel_export: z.string(),
+    frontend_html: z.string().optional()
+  })
+});
+
+const resultHistoryListSchema = z.object({
+  scope: z.string(),
+  generated_at: z.string(),
+  items: z.array(resultHistoryEntrySchema)
 });
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
@@ -145,8 +227,18 @@ export async function getTask(taskId: string) {
   return taskStatusSchema.parse(payload) as TaskStatus;
 }
 
+export async function getActiveTasks() {
+  const payload = await apiFetch("/api/tasks");
+  return activeTaskListSchema.parse(payload) as ActiveTaskList;
+}
+
 export async function getResult(resultId: string) {
   return apiFetch<ResultPayload>(`/api/results/${resultId}`);
+}
+
+export async function getResultsHistory() {
+  const payload = await apiFetch("/api/results");
+  return resultHistoryListSchema.parse(payload) as ResultHistoryList;
 }
 
 export function createTaskEventSource(taskId: string) {

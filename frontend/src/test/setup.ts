@@ -4,6 +4,7 @@ import { afterEach, vi } from "vitest";
 
 afterEach(() => {
   cleanup();
+  document.documentElement.classList.remove("browser-lite");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });

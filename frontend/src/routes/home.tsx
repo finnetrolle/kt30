@@ -7,7 +7,10 @@ import { TaskProgressPanel } from "@/features/task-progress/TaskProgressPanel";
 import { useTaskProgress } from "@/features/task-progress/useTaskProgress";
 import { UploadPanel } from "@/features/upload-spec/UploadPanel";
 import { ApiError, cancelTask, getSession, getTask, uploadFile } from "@/shared/api/client";
+import { shouldUseBrowserCompatibilityMode } from "@/shared/lib/browser";
+import { translateText } from "@/shared/lib/locale";
 import { LoadingState } from "@/shared/ui/LoadingState";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/shared/ui/card";
 import { PageShell } from "@/shared/ui/PageShell";
 
 export function HomePage() {
@@ -17,6 +20,7 @@ export function HomePage() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [taskError, setTaskError] = useState<string | null>(null);
   const taskId = search.taskId ?? null;
+  const compatibilityMode = shouldUseBrowserCompatibilityMode();
 
   const sessionQuery = useQuery({
     queryKey: ["session"],
@@ -55,7 +59,9 @@ export function HomePage() {
       });
     },
     onError: (mutationError) => {
-      setUploadError(mutationError instanceof Error ? mutationError.message : "Upload failed");
+      setUploadError(
+        mutationError instanceof Error ? translateText(mutationError.message, mutationError.message) : "Не удалось загрузить файл"
+      );
     }
   });
 
@@ -68,7 +74,7 @@ export function HomePage() {
 
   const progress = useTaskProgress({
     taskId,
-    enabled: !["succeeded", "failed", "canceled"].includes(taskStatusQuery.data?.status ?? ""),
+    enabled: !compatibilityMode && !["succeeded", "failed", "canceled"].includes(taskStatusQuery.data?.status ?? ""),
     onComplete: (event: TaskEvent) => {
       const resultId = event.data.result_id;
       if (typeof resultId !== "string") {
@@ -114,12 +120,12 @@ export function HomePage() {
     }
 
     if (taskStatusQuery.data.status === "failed") {
-      setTaskError(taskStatusQuery.data.error ?? "Analysis failed.");
+      setTaskError(translateText(taskStatusQuery.data.error, "Анализ завершился с ошибкой."));
       return;
     }
 
     if (taskStatusQuery.data.status === "canceled") {
-      setTaskError(taskStatusQuery.data.error ?? "Task was canceled.");
+      setTaskError(translateText(taskStatusQuery.data.error, "Задача была отменена."));
       return;
     }
 
@@ -127,45 +133,74 @@ export function HomePage() {
   }, [navigate, taskStatusQuery.data]);
 
   if (sessionQuery.isLoading) {
-    return <LoadingState title="Booting frontend" message="Checking backend session and CSRF state." />;
+    return <LoadingState title="Запускаем интерфейс" message="Проверяем серверную сессию и состояние CSRF." />;
   }
 
   const progressError =
     taskError ??
     (taskStatusQuery.isError
       ? taskStatusQuery.error instanceof Error
-        ? taskStatusQuery.error.message
-        : "Could not load the durable task status."
+        ? translateText(taskStatusQuery.error.message, taskStatusQuery.error.message)
+        : "Не удалось загрузить устойчивый статус задачи."
       : progress.error);
+  const currentStageFromStatus = translateText(
+    taskStatusQuery.data?.current_stage,
+    taskStatusQuery.data?.status === "queued" ? "Задача поставлена в очередь" : "Ожидание"
+  );
+  const startedAt = taskStatusQuery.data?.started_at ?? taskStatusQuery.data?.created_at;
+  const fallbackElapsedSeconds =
+    typeof startedAt === "number" ? Math.max(0, Math.floor(Date.now() / 1000 - startedAt)) : 0;
+  const effectiveStage = progress.events.length > 0 || progress.isStreaming ? progress.stage : currentStageFromStatus;
+  const effectiveTotalTokens = progress.totalTokens > 0 ? progress.totalTokens : Number(taskStatusQuery.data?.total_tokens ?? 0);
+  const effectiveRequestCount = progress.requestCount > 0 ? progress.requestCount : Number(taskStatusQuery.data?.request_count ?? 0);
+  const effectiveElapsedSeconds = progress.elapsedSeconds > 0 || progress.isStreaming ? progress.elapsedSeconds : fallbackElapsedSeconds;
+  const compatibilityNotice = compatibilityMode
+    ? "Для Safari включен безопасный режим: живой SSE-поток отключен, а статус задачи обновляется легким опросом."
+    : null;
 
   return (
     <PageShell
-      title="Upload and monitor"
-      description="This page talks to the standalone API surface: login, upload, durable task status and resumable SSE progress."
+      title="Загрузка и контроль анализа"
+      description="Здесь можно загрузить исходный файл, отслеживать устойчивый статус задачи и смотреть живой поток прогресса."
     >
       {taskId ? (
-        <div className="panel subtle-panel">
-          <h2>Resumable task</h2>
-          <p>Keep this URL bookmarked while the analysis is running. The standalone frontend can reopen progress from the `taskId` in the address bar.</p>
-        </div>
+        <Card className="border-dashed border-border/80 bg-card/70">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-xl">Возобновляемая задача</CardTitle>
+            <CardDescription>
+              Сохраните эту ссылку: пока идет анализ, интерфейс сможет восстановить прогресс по `taskId` в адресной
+              строке.
+            </CardDescription>
+          </CardHeader>
+        </Card>
       ) : (
-        <div className="panel subtle-panel">
-          <h2>How it works</h2>
-          <div className="steps-grid">
-            <div className="step-card">
-              <strong>1. Upload the source file</strong>
-              <p>Use a `.docx` or `.pdf` specification up to 16 MB.</p>
+        <Card className="border-dashed border-border/80 bg-card/70">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-xl">Как это работает</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-3 lg:grid-cols-3">
+              <div className="rounded-xl border border-border/70 bg-background/55 p-4">
+                <strong className="text-sm">1. Загрузите исходный файл</strong>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Поддерживаются документы `.docx` и `.pdf` размером до 16 МБ.
+                </p>
+              </div>
+              <div className="rounded-xl border border-border/70 bg-background/55 p-4">
+                <strong className="text-sm">2. Следите за прогрессом</strong>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Статус не теряется после обновления страницы, а события приходят в реальном времени через SSE.
+                </p>
+              </div>
+              <div className="rounded-xl border border-border/70 bg-background/55 p-4">
+                <strong className="text-sm">3. Изучите результат</strong>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Откройте готовую ИСР, проверьте зависимости и при необходимости экспортируйте JSON или Excel.
+                </p>
+              </div>
             </div>
-            <div className="step-card">
-              <strong>2. Watch durable progress</strong>
-              <p>The task status survives refreshes and streams live updates over SSE.</p>
-            </div>
-            <div className="step-card">
-              <strong>3. Review the WBS result</strong>
-              <p>Open the generated result, inspect dependencies, then export JSON or Excel.</p>
-            </div>
-          </div>
-        </div>
+          </CardContent>
+        </Card>
       )}
       <UploadPanel
         onUpload={async (file) => {
@@ -178,15 +213,16 @@ export function HomePage() {
       />
       <TaskProgressPanel
         taskId={taskId}
-        stage={progress.stage}
+        stage={effectiveStage}
         events={progress.events}
-        totalTokens={progress.totalTokens}
-        requestCount={progress.requestCount}
-        elapsedSeconds={progress.elapsedSeconds}
+        totalTokens={effectiveTotalTokens}
+        requestCount={effectiveRequestCount}
+        elapsedSeconds={effectiveElapsedSeconds}
         stageUsage={progress.stageUsage}
         jobStatus={taskStatusQuery.data?.status ?? null}
         isStreaming={progress.isStreaming}
         error={progressError}
+        compatibilityNotice={compatibilityNotice}
         isCanceling={cancelMutation.isPending}
         onCancel={async () => {
           if (!taskId) {

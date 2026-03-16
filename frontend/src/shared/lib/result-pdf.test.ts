@@ -1,8 +1,7 @@
-import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { ResultSummary } from "@/features/result-view/ResultSummary";
 import type { ResultPayload } from "@/entities/result/model";
+import { buildPdfDocument, buildResultPdfBlocks } from "@/shared/lib/result-pdf";
 
 const payload: ResultPayload = {
   result_id: "result-42",
@@ -97,21 +96,31 @@ const payload: ResultPayload = {
   }
 };
 
-describe("ResultSummary", () => {
-  it("renders the migrated result view with exports and structured sections", () => {
-    render(<ResultSummary payload={payload} />);
+describe("result pdf helpers", () => {
+  it("builds text blocks with key sections from the result payload", () => {
+    const blocks = buildResultPdfBlocks(payload);
+    const texts = blocks.map((block) => block.text);
 
-    expect(screen.getByText("Standalone frontend migration")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /скачать excel/i })).toHaveAttribute(
-      "href",
-      "/api/results/result-42/export.xlsx"
-    );
-    expect(screen.getByRole("button", { name: /скачать pdf/i })).toBeInTheDocument();
-    expect(screen.getByText("Использование токенов")).toBeInTheDocument();
-    expect(screen.getByText("Формируем черновик ИСР")).toBeInTheDocument();
-    expect(screen.getByText("Допущения")).toBeInTheDocument();
-    expect(screen.getByText("Риски")).toBeInTheDocument();
-    expect(screen.getByText("Рекомендации")).toBeInTheDocument();
-    expect(screen.getByText(/map api endpoints/i)).toBeInTheDocument();
+    expect(texts).toContain("Standalone frontend migration");
+    expect(texts).toContain("Сводка");
+    expect(texts.some((text) => text.includes("Использование токенов"))).toBe(true);
+    expect(texts.some((text) => text.includes("P1 Discovery"))).toBe(true);
+    expect(texts.some((text) => text.includes("R1: Auth mismatch between legacy and new UI"))).toBe(true);
+    expect(texts.some((text) => text.includes("Cover the standalone flow with tests."))).toBe(true);
+  });
+
+  it("builds a valid-looking PDF byte stream", () => {
+    const pdfBytes = buildPdfDocument([
+      {
+        height: 1754,
+        jpegData: new Uint8Array([255, 216, 255, 217]),
+        width: 1240
+      }
+    ]);
+    const header = new TextDecoder().decode(pdfBytes.slice(0, 8));
+    const tail = new TextDecoder().decode(pdfBytes.slice(-32));
+
+    expect(header).toBe("%PDF-1.4");
+    expect(tail).toContain("%%EOF");
   });
 });

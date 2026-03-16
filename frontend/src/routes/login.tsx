@@ -4,6 +4,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 
 import { LoginForm } from "@/features/auth/LoginForm";
 import { getSession, login } from "@/shared/api/client";
+import { translateText } from "@/shared/lib/locale";
 import { LoadingState } from "@/shared/ui/LoadingState";
 import { PageShell } from "@/shared/ui/PageShell";
 
@@ -27,7 +28,9 @@ export function LoginPage() {
       });
     },
     onError: (mutationError) => {
-      setError(mutationError instanceof Error ? mutationError.message : "Login failed");
+      setError(
+        mutationError instanceof Error ? translateText(mutationError.message, mutationError.message) : "Не удалось выполнить вход"
+      );
     }
   });
 
@@ -44,7 +47,7 @@ export function LoginPage() {
   }, [navigate, sessionQuery.data]);
 
   if (sessionQuery.isLoading) {
-    return <LoadingState title="Checking session" message="Looking up the current auth state." />;
+    return <LoadingState title="Проверяем сессию" message="Уточняем текущее состояние авторизации." />;
   }
 
   const compatibilityError =
@@ -52,8 +55,8 @@ export function LoginPage() {
 
   return (
     <PageShell
-      title="Sign in"
-      description="The standalone frontend uses the same Flask session and CSRF protection as the legacy app."
+      title="Вход в систему"
+      description="Новый интерфейс использует ту же сессию Flask и ту же защиту CSRF, что и старое приложение."
     >
       <LoginForm
         onSubmit={async (password) => {

@@ -34,6 +34,7 @@ class RunArtifacts:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self.source_copy_relative_path: Optional[str] = None
 
     @classmethod
     def create_for_upload(
@@ -51,6 +52,7 @@ class RunArtifacts:
         base_dir = Path(root_dir) / f"{timestamp}_{run_id}_{safe_stem}"
         instance = cls(base_dir)
         copied_source = instance.copy_source_file(source_path, source_name)
+        instance.source_copy_relative_path = copied_source
         instance.write_json(
             "run_meta.json",
             {
@@ -62,6 +64,13 @@ class RunArtifacts:
             }
         )
         return instance
+
+    @property
+    def source_copy_path(self) -> Optional[str]:
+        """Return the absolute path to the copied upload inside the run directory."""
+        if not self.source_copy_relative_path:
+            return None
+        return str(self.base_dir / self.source_copy_relative_path)
 
     def _resolve_path(self, relative_path: str) -> Path:
         """Resolve and prepare a path inside the artifact directory."""

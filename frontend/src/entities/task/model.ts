@@ -54,5 +54,49 @@ export interface TaskStatus {
   result_id?: string | null;
   worker_id?: string | null;
   cancel_requested?: boolean | number | null;
+  filename?: string | null;
+  file_size?: number | null;
+  current_stage?: string | null;
+  current_stage_id?: number | null;
+  request_count?: number;
+  total_tokens?: number;
+  created_at?: number;
+  updated_at?: number;
+  started_at?: number | null;
+  finished_at?: number | null;
   payload?: Record<string, unknown>;
+}
+
+export interface ActiveTaskSummary {
+  task_id: string;
+  status: TaskLifecycleStatus;
+  error?: string | null;
+  result_id?: string | null;
+  worker_id?: string | null;
+  cancel_requested?: boolean;
+  filename?: string | null;
+  file_size?: number | null;
+  request_id?: string | null;
+  current_stage?: string | null;
+  current_stage_id?: number | null;
+  request_count: number;
+  total_tokens: number;
+  created_at: number;
+  updated_at: number;
+  started_at?: number | null;
+  finished_at?: number | null;
+  artifacts_dir?: string | null;
+}
+
+export interface ActiveTaskList {
+  scope: string;
+  generated_at: string;
+  counts: {
+    total: number;
+    queued: number;
+    running: number;
+    cancel_requested: number;
+  };
+  items: ActiveTaskSummary[];
+  recent_results: ActiveTaskSummary[];
 }

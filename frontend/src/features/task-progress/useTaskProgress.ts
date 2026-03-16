@@ -2,6 +2,7 @@ import { useEffect, useEffectEvent, useState } from "react";
 
 import type { TaskEvent, TaskStageUsage, TokenUsageBucket } from "@/entities/task/model";
 import { createTaskEventSource } from "@/shared/api/client";
+import { translateText } from "@/shared/lib/locale";
 
 interface UseTaskProgressOptions {
   taskId: string | null;
@@ -21,7 +22,7 @@ interface TaskProgressState {
 }
 
 const INITIAL_STATE: TaskProgressState = {
-  stage: "Idle",
+  stage: "Ожидание",
   events: [],
   isStreaming: false,
   totalTokens: 0,
@@ -31,7 +32,11 @@ const INITIAL_STATE: TaskProgressState = {
   error: null
 };
 
-const RECONNECTING_MESSAGE = "Connection hiccup detected. Waiting for SSE to reconnect...";
+const RECONNECTING_MESSAGE = "Соединение прервалось. Ждем переподключения к потоку событий...";
+const STREAM_STOPPED_MESSAGE =
+  "Живой поток временно остановлен для защиты браузера. Статус задачи продолжает обновляться опросом.";
+const MAX_VISIBLE_EVENTS = 60;
+const MAX_STREAM_ERRORS = 6;
 
 function normalizeUsageBucket(usage: unknown): TokenUsageBucket {
   if (!usage || typeof usage !== "object") {
@@ -52,6 +57,11 @@ function upsertStageUsage(stageUsage: TaskStageUsage[], entry: TaskStageUsage) {
   next.push(entry);
   next.sort((left, right) => left.stage_id - right.stage_id);
   return next;
+}
+
+function appendVisibleEvent(events: TaskEvent[], event: TaskEvent) {
+  const next = [...events, event];
+  return next.length > MAX_VISIBLE_EVENTS ? next.slice(next.length - MAX_VISIBLE_EVENTS) : next;
 }
 
 export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskProgressOptions) {
@@ -75,7 +85,7 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
     }
 
     setState({
-      stage: "Connecting to worker stream...",
+      stage: "Подключаемся к потоку воркера...",
       events: [],
       isStreaming: true,
       totalTokens: 0,
@@ -86,38 +96,31 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
     });
 
     const eventSource = createTaskEventSource(taskId);
-
-    function appendEvent(event: TaskEvent) {
-      setState((current) => ({
-        ...current,
-        events: [...current.events, event]
-      }));
-    }
+    let consecutiveStreamErrors = 0;
+    let streamClosed = false;
 
     function parseEvent(rawEvent: MessageEvent<string>): TaskEvent {
       return JSON.parse(rawEvent.data) as TaskEvent;
     }
 
-    function markActivity() {
-      setState((current) => ({
-        ...current,
-        error: current.error === RECONNECTING_MESSAGE ? null : current.error
-      }));
+    function noteActivity() {
+      consecutiveStreamErrors = 0;
     }
 
     eventSource.addEventListener("stage", (rawEvent) => {
       const event = parseEvent(rawEvent as MessageEvent<string>);
-      appendEvent(event);
-      markActivity();
+      noteActivity();
       setState((current) => ({
         ...current,
-        stage: event.message,
+        events: appendVisibleEvent(current.events, event),
+        error: current.error === RECONNECTING_MESSAGE ? null : current.error,
+        stage: translateText(event.message),
         totalTokens: Number(event.data.overall_usage?.total_tokens ?? current.totalTokens),
         stageUsage:
           typeof event.data.stage_id === "number"
             ? upsertStageUsage(current.stageUsage, {
                 stage_id: event.data.stage_id,
-                message: event.message,
+                message: translateText(event.message),
                 usage: normalizeUsageBucket(event.data.usage),
                 request_count: Number(event.data.request_count ?? 0)
               })
@@ -126,20 +129,31 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
     });
 
     eventSource.addEventListener("info", (rawEvent) => {
-      appendEvent(parseEvent(rawEvent as MessageEvent<string>));
-      markActivity();
+      const event = parseEvent(rawEvent as MessageEvent<string>);
+      noteActivity();
+      setState((current) => ({
+        ...current,
+        events: appendVisibleEvent(current.events, event),
+        error: current.error === RECONNECTING_MESSAGE ? null : current.error
+      }));
     });
 
     eventSource.addEventListener("agent", (rawEvent) => {
-      appendEvent(parseEvent(rawEvent as MessageEvent<string>));
-      markActivity();
+      const event = parseEvent(rawEvent as MessageEvent<string>);
+      noteActivity();
+      setState((current) => ({
+        ...current,
+        events: appendVisibleEvent(current.events, event),
+        error: current.error === RECONNECTING_MESSAGE ? null : current.error
+      }));
     });
 
     eventSource.addEventListener("usage", (rawEvent) => {
       const event = parseEvent(rawEvent as MessageEvent<string>);
-      markActivity();
+      noteActivity();
       setState((current) => ({
         ...current,
+        error: current.error === RECONNECTING_MESSAGE ? null : current.error,
         totalTokens: Number(event.data.overall_usage?.total_tokens ?? current.totalTokens),
         requestCount: Number(event.data.request_count ?? current.requestCount),
         stageUsage:
@@ -148,7 +162,7 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
                 stage_id: event.data.stage_id,
                 message:
                   typeof event.data.stage_message === "string" && event.data.stage_message
-                    ? event.data.stage_message
+                    ? translateText(event.data.stage_message)
                     : current.stage,
                 usage: normalizeUsageBucket(event.data.stage_usage),
                 request_count: Number(event.data.stage_request_count ?? 0)
@@ -159,11 +173,13 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
 
     eventSource.addEventListener("complete", (rawEvent) => {
       const event = parseEvent(rawEvent as MessageEvent<string>);
-      appendEvent(event);
-      markActivity();
+      noteActivity();
+      streamClosed = true;
       setState((current) => ({
         ...current,
-        stage: event.message,
+        events: appendVisibleEvent(current.events, event),
+        error: current.error === RECONNECTING_MESSAGE ? null : current.error,
+        stage: translateText(event.message),
         isStreaming: false,
         totalTokens: Number(event.data.usage_summary?.totals.total_tokens ?? current.totalTokens),
         requestCount: Number(event.data.usage_summary?.request_count ?? current.requestCount),
@@ -179,20 +195,39 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
       }
 
       const event = parseEvent(rawEvent);
-      appendEvent(event);
+      noteActivity();
+      streamClosed = true;
       setState((current) => ({
         ...current,
-        stage: "Analysis failed",
+        events: appendVisibleEvent(current.events, event),
+        stage: "Анализ завершился с ошибкой",
         isStreaming: false,
         totalTokens: Number(event.data.usage_summary?.totals.total_tokens ?? current.totalTokens),
         requestCount: Number(event.data.usage_summary?.request_count ?? current.requestCount),
         stageUsage: event.data.usage_summary?.stages ?? current.stageUsage,
-        error: event.message
+        error: translateText(event.message)
       }));
       eventSource.close();
     });
 
     eventSource.onerror = () => {
+      if (streamClosed) {
+        return;
+      }
+
+      consecutiveStreamErrors += 1;
+
+      if (consecutiveStreamErrors >= MAX_STREAM_ERRORS) {
+        streamClosed = true;
+        eventSource.close();
+        setState((current) => ({
+          ...current,
+          isStreaming: false,
+          error: STREAM_STOPPED_MESSAGE
+        }));
+        return;
+      }
+
       setState((current) => ({
         ...current,
         error: current.error ?? RECONNECTING_MESSAGE
@@ -212,9 +247,9 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
     const timerId = window.setInterval(() => {
       setState((current) => ({
         ...current,
-        elapsedSeconds: current.elapsedSeconds + 1
+        elapsedSeconds: current.elapsedSeconds + 2
       }));
-    }, 1000);
+    }, 2000);
 
     return () => {
       window.clearInterval(timerId);

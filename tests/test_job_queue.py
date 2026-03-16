@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 
 from job_queue import get_job_queue, JobStatus
@@ -35,6 +36,23 @@ class JobQueueTests(unittest.TestCase):
 
         self.assertEqual(job["status"], JobStatus.SUCCEEDED)
         self.assertEqual(job["result_id"], "result-3")
+
+    def test_touch_prevents_running_job_from_being_requeued_as_stale(self):
+        self.queue.enqueue("task-4", {"task_id": "task-4"})
+        self.queue.lease_next_job("worker-1", stale_after_seconds=60)
+
+        with self.queue._connect() as conn:
+            conn.execute(
+                "UPDATE jobs SET updated_at = ? WHERE task_id = ?",
+                (time.time() - 120, "task-4")
+            )
+
+        self.queue.touch("task-4")
+        requeued = self.queue.requeue_stale_jobs(stale_after_seconds=60)
+        job = self.queue.get("task-4")
+
+        self.assertEqual(requeued, 0)
+        self.assertEqual(job["status"], JobStatus.RUNNING)
 
 
 if __name__ == "__main__":

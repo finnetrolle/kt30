@@ -67,7 +67,13 @@ class ProgressTracker:
         run_artifacts: Optional[RunArtifacts] = None,
         created_at: Optional[float] = None,
         completed: bool = False,
-        error: bool = False
+        error: bool = False,
+        current_stage_id: int = 0,
+        current_stage_message: str = "",
+        stage_usage: Optional[List[Dict[str, Any]]] = None,
+        overall_usage: Optional[Dict[str, Any]] = None,
+        request_count: int = 0,
+        persist_on_init: bool = True
     ):
         self.task_id = task_id
         self.run_artifacts = run_artifacts
@@ -77,14 +83,15 @@ class ProgressTracker:
         self._completed = completed
         self._error = error
         self._lock = threading.Lock()
-        self._current_stage_id = 0
-        self._current_stage_message = ""
-        self._stage_usage: Dict[int, Dict[str, Any]] = {}
-        self._overall_usage = _empty_usage()
-        self._request_count = 0
+        self._current_stage_id = int(current_stage_id or 0)
+        self._current_stage_message = current_stage_message or ""
+        self._stage_usage = self._deserialize_stage_usage(stage_usage)
+        self._overall_usage = _normalize_usage(overall_usage)
+        self._request_count = int(request_count or 0)
 
         if self.storage_dir:
-            self.storage_dir.mkdir(parents=True, exist_ok=True)
+            self._ensure_storage_dir()
+        if self.storage_dir and persist_on_init:
             self._persist_state()
 
     @classmethod
@@ -94,6 +101,11 @@ class ProgressTracker:
         created_at = time.time()
         completed = False
         error = False
+        current_stage_id = 0
+        current_stage_message = ""
+        stage_usage: List[Dict[str, Any]] = []
+        overall_usage = _empty_usage()
+        request_count = 0
 
         if meta_path.exists():
             try:
@@ -102,6 +114,11 @@ class ProgressTracker:
                 created_at = float(meta.get("created_at", created_at))
                 completed = bool(meta.get("completed", False))
                 error = bool(meta.get("error", False))
+                current_stage_id = int(meta.get("current_stage_id", 0) or 0)
+                current_stage_message = str(meta.get("current_stage_message", "") or "")
+                stage_usage = meta.get("stage_usage", []) if isinstance(meta.get("stage_usage", []), list) else []
+                overall_usage = _normalize_usage(meta.get("overall_usage"))
+                request_count = int(meta.get("request_count", 0) or 0)
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 logger.warning("Failed to read progress metadata for %s: %s", task_id, exc)
 
@@ -110,8 +127,19 @@ class ProgressTracker:
             storage_dir=storage_dir,
             created_at=created_at,
             completed=completed,
-            error=error
+            error=error,
+            current_stage_id=current_stage_id,
+            current_stage_message=current_stage_message,
+            stage_usage=stage_usage,
+            overall_usage=overall_usage,
+            request_count=request_count,
+            persist_on_init=False
         )
+
+    def _ensure_storage_dir(self) -> None:
+        """Recreate the task directory if it was removed while the job is still active."""
+        if self.storage_dir:
+            self.storage_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def meta_path(self) -> Optional[Path]:
@@ -145,20 +173,62 @@ class ProgressTracker:
             "created_at": self.created_at,
             "completed": self._completed,
             "error": self._error,
+            "current_stage_id": self._current_stage_id,
+            "current_stage_message": self._current_stage_message,
+            "stage_usage": self._serialize_stage_usage(),
+            "overall_usage": dict(self._overall_usage),
+            "request_count": self._request_count,
             "artifacts_dir": self.artifacts_dir,
             "updated_at": time.time()
         }
+
+    def _serialize_stage_usage(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "stage_id": entry["stage_id"],
+                "message": entry["message"],
+                "usage": dict(entry["usage"]),
+                "request_count": entry["request_count"]
+            }
+            for _, entry in sorted(self._stage_usage.items())
+        ]
+
+    def _deserialize_stage_usage(self, stage_usage: Optional[List[Dict[str, Any]]]) -> Dict[int, Dict[str, Any]]:
+        restored: Dict[int, Dict[str, Any]] = {}
+        for raw_entry in stage_usage or []:
+            if not isinstance(raw_entry, dict):
+                continue
+
+            stage_id = int(raw_entry.get("stage_id", 0) or 0)
+            if stage_id <= 0:
+                continue
+
+            restored[stage_id] = {
+                "stage_id": stage_id,
+                "message": str(raw_entry.get("message", "") or ""),
+                "usage": _normalize_usage(raw_entry.get("usage")),
+                "request_count": int(raw_entry.get("request_count", 0) or 0)
+            }
+
+        return restored
 
     def _persist_state(self):
         """Persist task metadata atomically."""
         if not self.meta_path:
             return
 
-        temp_path = self.meta_path.with_suffix(".tmp")
         payload = self._state_payload()
-        with open(temp_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-        temp_path.replace(self.meta_path)
+        for attempt in range(2):
+            self._ensure_storage_dir()
+            temp_path = self.meta_path.with_suffix(".tmp")
+            try:
+                with open(temp_path, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, ensure_ascii=False, indent=2)
+                temp_path.replace(self.meta_path)
+                return
+            except FileNotFoundError:
+                if attempt == 1:
+                    raise
 
     def refresh_state(self):
         """Refresh completion flags from persisted state."""
@@ -191,9 +261,31 @@ class ProgressTracker:
             return
 
         line = json.dumps(event, ensure_ascii=False, default=str)
-        with open(self.events_path, "a", encoding="utf-8") as handle:
-            handle.write(line)
-            handle.write("\n")
+        for attempt in range(2):
+            self._ensure_storage_dir()
+            try:
+                with open(self.events_path, "a", encoding="utf-8") as handle:
+                    handle.write(line)
+                    handle.write("\n")
+                return
+            except FileNotFoundError:
+                if attempt == 1:
+                    raise
+
+    def is_expired(self, max_age_seconds: float, now: Optional[float] = None) -> bool:
+        """Return True when a finished tracker has been idle beyond retention."""
+        if max_age_seconds <= 0:
+            return False
+
+        now = time.time() if now is None else now
+        state = self.get_persisted_state()
+        completed = bool(state.get("completed", self._completed))
+        error = bool(state.get("error", self._error))
+        if not (completed or error):
+            return False
+
+        updated_at = float(state.get("updated_at", self.created_at) or self.created_at)
+        return now - updated_at > max_age_seconds
 
     def read_events_since(self, offset: int = 0) -> Tuple[List[Dict[str, Any]], int]:
         """Read persisted events after the provided byte offset."""
@@ -450,7 +542,7 @@ class ProgressTrackerStore:
         with self._store_lock:
             expired_cache = [
                 task_id for task_id, tracker in self._trackers.items()
-                if now - tracker.created_at > max_age
+                if tracker.is_expired(max_age, now)
             ]
             for task_id in expired_cache:
                 self._trackers.pop(task_id, None)
@@ -460,8 +552,7 @@ class ProgressTrackerStore:
                 continue
 
             tracker = ProgressTracker.from_existing(task_dir.name, task_dir)
-            age_seconds = now - tracker.created_at
-            if age_seconds <= max_age:
+            if not tracker.is_expired(max_age, now):
                 continue
 
             try:

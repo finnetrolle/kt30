@@ -78,6 +78,109 @@ describe("shared api client", () => {
     expect(task.payload).toEqual({ filename: "spec.docx" });
   });
 
+  it("parses the active task dashboard payload", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        scope: "active",
+        generated_at: "2026-03-16T12:00:00Z",
+        counts: {
+          total: 1,
+          queued: 0,
+          running: 1,
+          cancel_requested: 0
+        },
+        items: [
+          {
+            task_id: "task-77",
+            status: "running",
+            filename: "roadmap.docx",
+            cancel_requested: 0,
+            current_stage: "Парсинг документа...",
+            request_count: 2,
+            total_tokens: 340,
+            created_at: 1710000000,
+            updated_at: 1710000030,
+            started_at: 1710000010,
+            finished_at: null,
+            worker_id: "worker-a"
+          }
+        ],
+        recent_results: [
+          {
+            task_id: "task-88",
+            status: "succeeded",
+            filename: "result.docx",
+            cancel_requested: 0,
+            request_count: 4,
+            total_tokens: 780,
+            created_at: 1710000000,
+            updated_at: 1710000300,
+            started_at: 1710000010,
+            finished_at: 1710000300,
+            result_id: "result-88"
+          }
+        ]
+      })
+    );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getActiveTasks } = await import("@/shared/api/client");
+    const taskList = await getActiveTasks();
+
+    expect(taskList.counts.running).toBe(1);
+    expect(taskList.items[0]?.task_id).toBe("task-77");
+    expect(taskList.items[0]?.cancel_requested).toBe(false);
+    expect(taskList.items[0]?.total_tokens).toBe(340);
+    expect(taskList.recent_results[0]?.result_id).toBe("result-88");
+  });
+
+  it("parses the results history payload", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        scope: "history",
+        generated_at: "2026-03-16T12:00:00Z",
+        items: [
+          {
+            result_id: "result-101",
+            stored_at: 1710000300,
+            timestamp: "2026-03-16T11:59:00Z",
+            filename: "history.docx",
+            project_name: "History project",
+            description: "Saved result entry",
+            complexity_level: "medium",
+            calculated_duration: {
+              total_days: 6,
+              total_weeks: 2
+            },
+            token_usage: {
+              totals: {
+                total_tokens: 480
+              },
+              request_count: 3
+            },
+            links: {
+              self: "/api/results/result-101",
+              legacy_html: "/results/result-101",
+              excel_export: "/api/results/result-101/export.xlsx",
+              legacy_excel_export: "/export/excel/result-101",
+              frontend_html: "/app/results/result-101"
+            }
+          }
+        ]
+      })
+    );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getResultsHistory } = await import("@/shared/api/client");
+    const history = await getResultsHistory();
+
+    expect(history.scope).toBe("history");
+    expect(history.items[0]?.result_id).toBe("result-101");
+    expect(history.items[0]?.links.excel_export).toBe("/api/results/result-101/export.xlsx");
+  });
+
   it("surfaces backend API errors with the original status and message", async () => {
     const fetchMock = vi
       .fn()

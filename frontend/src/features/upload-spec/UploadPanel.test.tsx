@@ -11,7 +11,7 @@ describe("UploadPanel", () => {
 
     render(<UploadPanel onUpload={onUpload} isUploading={false} error={null} />);
 
-    const input = screen.getByLabelText(/choose a word or pdf file/i);
+    const input = screen.getByLabelText(/выберите файл word или pdf/i);
     const file = new File(["spec"], "specification.pdf", {
       type: "application/pdf"
     });
@@ -20,7 +20,7 @@ describe("UploadPanel", () => {
 
     expect(screen.getByText("specification.pdf")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /run analysis/i }));
+    await user.click(screen.getByRole("button", { name: /запустить анализ/i }));
 
     expect(onUpload).toHaveBeenCalledTimes(1);
     expect(onUpload).toHaveBeenCalledWith(file);
@@ -29,7 +29,7 @@ describe("UploadPanel", () => {
   it("shows a validation error for unsupported file extensions", async () => {
     render(<UploadPanel onUpload={vi.fn()} isUploading={false} error={null} />);
 
-    const input = screen.getByLabelText(/choose a word or pdf file/i);
+    const input = screen.getByLabelText(/выберите файл word или pdf/i);
     const file = new File(["plain text"], "notes.txt", {
       type: "text/plain"
     });
@@ -40,7 +40,7 @@ describe("UploadPanel", () => {
       }
     });
 
-    expect(screen.getByText(/use a \.docx or \.pdf file/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /run analysis/i })).toBeDisabled();
+    expect(screen.getByText(/поддерживаются только файлы \.docx и \.pdf/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /запустить анализ/i })).toBeDisabled();
   });
 });

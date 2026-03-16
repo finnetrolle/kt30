@@ -92,6 +92,40 @@ class JobQueue:
             ).fetchone()
         return self._row_to_job(row)
 
+    def list_jobs(self, statuses: Optional[list[str]] = None, limit: int = 100) -> list[Dict[str, Any]]:
+        """Fetch jobs ordered for operator-facing dashboards."""
+        query = [
+            "SELECT * FROM jobs"
+        ]
+        params: list[Any] = []
+
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            query.append(f"WHERE status IN ({placeholders})")
+            params.extend(statuses)
+
+        query.append(
+            """
+            ORDER BY
+                CASE status
+                    WHEN 'running' THEN 0
+                    WHEN 'queued' THEN 1
+                    ELSE 2
+                END,
+                COALESCE(started_at, created_at) DESC,
+                updated_at DESC
+            """
+        )
+
+        if limit > 0:
+            query.append("LIMIT ?")
+            params.append(limit)
+
+        with self._connect() as conn:
+            rows = conn.execute("\n".join(query), params).fetchall()
+
+        return [self._row_to_job(row) for row in rows if row is not None]
+
     def lease_next_job(self, worker_id: str, stale_after_seconds: int) -> Optional[Dict[str, Any]]:
         """Lease the next available job for processing."""
         self.requeue_stale_jobs(stale_after_seconds)

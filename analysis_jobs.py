@@ -3,6 +3,7 @@ Shared analysis job processing logic for web and worker runtimes.
 """
 import logging
 import os
+import threading
 from datetime import datetime
 from typing import Dict, Any, Optional
 
@@ -41,16 +42,34 @@ def process_analysis_job(
     task_id = job["task_id"]
     payload = job["payload"]
     filepath = payload["filepath"]
+    upload_filepath = payload.get("upload_filepath", filepath)
     filename = payload["filename"]
     unique_id = payload["unique_id"]
     request_id = payload["request_id"]
 
     tracker = progress_store.get(task_id)
+    heartbeat_stop = threading.Event()
+    heartbeat_interval_seconds = min(30.0, max(5.0, Config.JOB_STALE_AFTER_SECONDS / 3))
 
     def ensure_not_canceled():
         job_queue.touch(task_id)
         if job_queue.is_cancel_requested(task_id):
             raise AnalysisJobCanceled("Задача отменена пользователем")
+
+    def keep_job_alive():
+        """Refresh the durable lease while long-running analysis is still active."""
+        while not heartbeat_stop.wait(heartbeat_interval_seconds):
+            try:
+                job_queue.touch(task_id)
+            except Exception as heartbeat_error:
+                logger.warning("[%s] Failed to refresh job heartbeat for %s: %s", request_id, task_id, heartbeat_error)
+
+    heartbeat_thread = threading.Thread(
+        target=keep_job_alive,
+        name=f"job-heartbeat-{task_id}",
+        daemon=True
+    )
+    heartbeat_thread.start()
 
     try:
         ensure_not_canceled()
@@ -152,14 +171,32 @@ def process_analysis_job(
         if tracker:
             tracker.error(str(canceled_error))
         job_queue.mark_canceled(task_id, str(canceled_error))
+    except PermissionError as error:
+        logger.exception("[%s] Permission error during background processing: %s", request_id, error)
+        if tracker:
+            tracker.write_json_artifact("background_error.json", {
+                "error": str(error),
+                "request_id": request_id,
+                "analysis_filepath": filepath,
+                "upload_filepath": upload_filepath
+            })
+            tracker.error(
+                "Нет доступа к файлу для анализа. "
+                f"Источник: {filepath}"
+            )
+        job_queue.mark_failed(task_id, str(error))
     except Exception as error:
         logger.exception("[%s] Unexpected error during background processing: %s", request_id, error)
         if tracker:
             tracker.write_json_artifact("background_error.json", {
                 "error": str(error),
-                "request_id": request_id
+                "request_id": request_id,
+                "analysis_filepath": filepath,
+                "upload_filepath": upload_filepath
             })
             tracker.error(f"Непредвиденная ошибка: {str(error)}")
         job_queue.mark_failed(task_id, str(error))
     finally:
-        _cleanup_uploaded_file(filepath, request_id)
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=1.0)
+        _cleanup_uploaded_file(upload_filepath, request_id)

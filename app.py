@@ -37,6 +37,40 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _close_uploaded_file(uploaded_file, request_id: str):
+    """Close the upload stream promptly so background workers can reopen the file safely."""
+    close = getattr(uploaded_file, 'close', None)
+    if not callable(close):
+        return
+
+    try:
+        close()
+    except Exception as close_error:
+        logger.warning("[%s] Failed to close uploaded file stream: %s", request_id, close_error)
+
+
+def _save_uploaded_file(uploaded_file, upload_folder: str, saved_filename: str, request_id: str) -> tuple[str, int]:
+    """Persist the upload and return an absolute path plus file size."""
+    upload_dir = os.path.abspath(upload_folder)
+    os.makedirs(upload_dir, exist_ok=True)
+    filepath = os.path.abspath(os.path.join(upload_dir, saved_filename))
+
+    logger.info("[%s] Saving file to: %s", request_id, filepath)
+    try:
+        uploaded_file.save(filepath)
+    finally:
+        # Embedded workers can start immediately after enqueueing; close the upload stream first
+        # so parsers like python-docx do not hit a locked file on Windows/dev setups.
+        _close_uploaded_file(uploaded_file, request_id)
+
+    with open(filepath, 'rb'):
+        pass
+
+    file_size = os.path.getsize(filepath)
+    logger.info("[%s] File saved successfully. Size: %s bytes", request_id, file_size)
+    return filepath, file_size
+
+
 def create_app(config_class=Config):
     """Create and configure the Flask application.
     
@@ -199,6 +233,65 @@ def create_app(config_class=Config):
             'legacy_excel_export': f"/export/excel/{result_id}",
             'frontend_html': _standalone_frontend_path(f"results/{result_id}")
         }
+
+        return view_model
+
+    def _build_result_history_entry(stored_result: dict) -> dict | None:
+        """Build a lightweight summary row for the results history page."""
+        result_id = stored_result.get('_result_id')
+        if not result_id:
+            return None
+
+        view_model = _build_result_view_model(result_id, {
+            key: value for key, value in stored_result.items() if not str(key).startswith('_')
+        })
+        if not view_model:
+            return None
+
+        project_info = view_model.get('result', {}).get('project_info', {})
+        return {
+            'result_id': result_id,
+            'stored_at': stored_result.get('_stored_at'),
+            'timestamp': view_model.get('timestamp'),
+            'filename': view_model.get('filename'),
+            'project_name': project_info.get('project_name'),
+            'description': project_info.get('description'),
+            'complexity_level': project_info.get('complexity_level'),
+            'calculated_duration': view_model.get('calculated_duration'),
+            'token_usage': view_model.get('token_usage'),
+            'links': view_model.get('links')
+        }
+
+    def _build_task_view_model(job: dict, include_payload: bool = False) -> dict:
+        """Attach operator-focused metadata to a durable job record."""
+        payload = job.get('payload') or {}
+        tracker = progress_store.get(job['task_id'])
+        tracker_state = tracker.get_persisted_state() if tracker else {}
+        overall_usage = tracker_state.get('overall_usage') or {}
+
+        view_model = {
+            'task_id': job['task_id'],
+            'status': job['status'],
+            'error': job.get('error'),
+            'result_id': job.get('result_id'),
+            'worker_id': job.get('worker_id'),
+            'cancel_requested': bool(job.get('cancel_requested')),
+            'created_at': job.get('created_at'),
+            'updated_at': job.get('updated_at'),
+            'started_at': job.get('started_at'),
+            'finished_at': job.get('finished_at'),
+            'filename': payload.get('filename'),
+            'file_size': payload.get('file_size'),
+            'request_id': payload.get('request_id'),
+            'current_stage': tracker_state.get('current_stage_message'),
+            'current_stage_id': tracker_state.get('current_stage_id'),
+            'request_count': int(tracker_state.get('request_count', 0) or 0),
+            'total_tokens': int(overall_usage.get('total_tokens', 0) or 0),
+            'artifacts_dir': tracker_state.get('artifacts_dir') or payload.get('artifacts_dir')
+        }
+
+        if include_payload:
+            view_model['payload'] = payload
 
         return view_model
 
@@ -430,13 +523,12 @@ def create_app(config_class=Config):
             task_id = str(uuid.uuid4())[:12]
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             saved_filename = f"{timestamp}_{unique_id}_{filename}"
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], saved_filename)
-            
-            # Save the file
-            logger.info(f"[{request_id}] Saving file to: {filepath}")
-            file.save(filepath)
-            file_size = os.path.getsize(filepath)
-            logger.info(f"[{request_id}] File saved successfully. Size: {file_size} bytes")
+            filepath, file_size = _save_uploaded_file(
+                file,
+                app.config['UPLOAD_FOLDER'],
+                saved_filename,
+                request_id
+            )
             
             artifacts = RunArtifacts.create_for_upload(
                 app.config['ARTIFACTS_ROOT'],
@@ -451,6 +543,7 @@ def create_app(config_class=Config):
                     "file_size": file_size
                 }
             )
+            analysis_filepath = artifacts.source_copy_path or filepath
 
             # Create progress tracker
             tracker = progress_store.create(task_id, run_artifacts=artifacts)
@@ -463,6 +556,8 @@ def create_app(config_class=Config):
                     "file_size": file_size,
                     "request_id": request_id,
                     "task_id": task_id,
+                    "saved_upload_path": filepath,
+                    "analysis_source_path": analysis_filepath,
                     "artifacts_dir": tracker.artifacts_dir
                 }
             )
@@ -471,8 +566,10 @@ def create_app(config_class=Config):
             tracker.info("⏳ Анализ будет запущен worker-процессом")
             job_queue.enqueue(task_id, {
                 "task_id": task_id,
-                "filepath": filepath,
+                "filepath": analysis_filepath,
+                "upload_filepath": filepath,
                 "filename": filename,
+                "file_size": file_size,
                 "unique_id": unique_id,
                 "request_id": request_id,
                 "artifacts_dir": tracker.artifacts_dir
@@ -550,7 +647,36 @@ def create_app(config_class=Config):
         job = job_queue.get(task_id)
         if not job:
             return jsonify({'error': 'Task not found', 'status': 404}), 404
-        return jsonify(job)
+        return jsonify(_build_task_view_model(job, include_payload=True))
+
+    @app.route('/api/tasks')
+    def list_active_tasks():
+        """Return all active background jobs for the operator dashboard."""
+        jobs = job_queue.list_jobs(
+            statuses=[JobStatus.QUEUED, JobStatus.RUNNING],
+            limit=200
+        )
+        items = [_build_task_view_model(job) for job in jobs]
+        recent_results = []
+
+        for job in job_queue.list_jobs(statuses=[JobStatus.SUCCEEDED], limit=20):
+            result_id = job.get('result_id')
+            if not result_id or not store.get(result_id):
+                continue
+            recent_results.append(_build_task_view_model(job))
+
+        return jsonify({
+            'scope': 'active',
+            'generated_at': datetime.utcnow().isoformat() + 'Z',
+            'counts': {
+                'total': len(items),
+                'queued': sum(1 for item in items if item['status'] == JobStatus.QUEUED),
+                'running': sum(1 for item in items if item['status'] == JobStatus.RUNNING),
+                'cancel_requested': sum(1 for item in items if item['cancel_requested'])
+            },
+            'items': items,
+            'recent_results': recent_results
+        })
 
     @app.route('/api/tasks/<task_id>/cancel', methods=['POST'])
     def cancel_task(task_id):
@@ -587,6 +713,21 @@ def create_app(config_class=Config):
             return jsonify({'error': 'Result not found', 'status': 404}), 404
         
         return jsonify(result_data)
+
+    @app.route('/api/results')
+    def api_results_history():
+        """Return recent stored results for the standalone frontend history page."""
+        entries = []
+        for stored_result in store.list_recent(limit=50):
+            entry = _build_result_history_entry(stored_result)
+            if entry:
+                entries.append(entry)
+
+        return jsonify({
+            'scope': 'history',
+            'generated_at': datetime.utcnow().isoformat() + 'Z',
+            'items': entries
+        })
     
     @app.route('/api/results/<result_id>/export.xlsx')
     @app.route('/export/excel/<result_id>')

@@ -112,3 +112,35 @@ export interface ResultPayload {
   };
   result: ResultDocument;
 }
+
+export interface ResultHistoryEntry {
+  result_id: string;
+  stored_at?: number | null;
+  timestamp: string;
+  filename: string;
+  project_name?: string | null;
+  description?: string | null;
+  complexity_level?: string | null;
+  calculated_duration: CalculatedDuration;
+  token_usage: {
+    totals?: {
+      total_tokens?: number;
+      prompt_tokens?: number;
+      completion_tokens?: number;
+    };
+    request_count?: number;
+  };
+  links: {
+    self: string;
+    legacy_html: string;
+    excel_export: string;
+    legacy_excel_export: string;
+    frontend_html?: string;
+  };
+}
+
+export interface ResultHistoryList {
+  scope: string;
+  generated_at: string;
+  items: ResultHistoryEntry[];
+}

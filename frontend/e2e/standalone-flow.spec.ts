@@ -15,6 +15,8 @@ interface MockScenario {
   taskId?: string;
   resultId?: string;
   taskStatusMode?: "happy_path" | "cancelled" | "missing";
+  tasksDashboardMode?: "empty" | "with_recent_result";
+  resultsHistoryMode?: "empty" | "with_items";
   missingResult?: boolean;
 }
 
@@ -242,6 +244,8 @@ async function installStandaloneApiMock(page: Page, scenario: MockScenario = {})
   };
   const acceptedPassword = scenario.acceptedPassword ?? "secret-password";
   const taskStatusMode = scenario.taskStatusMode ?? "happy_path";
+  const tasksDashboardMode = scenario.tasksDashboardMode ?? "empty";
+  const resultsHistoryMode = scenario.resultsHistoryMode ?? "empty";
   const missingResult = scenario.missingResult ?? false;
 
   await page.route("**/api/**", async (route) => {
@@ -344,6 +348,80 @@ async function installStandaloneApiMock(page: Page, scenario: MockScenario = {})
       return;
     }
 
+    if (path === "/api/tasks" && method === "GET") {
+      await fulfillJson(route, {
+        scope: "active",
+        generated_at: "2026-03-16T12:00:00Z",
+        counts: {
+          total: 0,
+          queued: 0,
+          running: 0,
+          cancel_requested: 0
+        },
+        items: [],
+        recent_results:
+          tasksDashboardMode === "with_recent_result"
+            ? [
+                {
+                  task_id: state.taskId,
+                  status: "succeeded",
+                  filename: "specification.pdf",
+                  result_id: state.resultId,
+                  cancel_requested: 0,
+                  request_count: 1,
+                  total_tokens: 150,
+                  created_at: 1710428390,
+                  updated_at: 1710428402,
+                  started_at: 1710428392,
+                  finished_at: 1710428402
+                }
+              ]
+            : []
+      });
+      return;
+    }
+
+    if (path === "/api/results" && method === "GET") {
+      await fulfillJson(route, {
+        scope: "history",
+        generated_at: "2026-03-16T12:00:00Z",
+        items:
+          resultsHistoryMode === "with_items"
+            ? [
+                {
+                  result_id: state.resultId,
+                  stored_at: 1710428402,
+                  timestamp: "2026-03-14T14:00:00Z",
+                  filename: "specification.pdf",
+                  project_name: "Standalone frontend E2E",
+                  description: "Browser-level verification of the new migration path.",
+                  complexity_level: "medium",
+                  calculated_duration: {
+                    total_days: 10,
+                    total_weeks: 2
+                  },
+                  token_usage: {
+                    totals: {
+                      total_tokens: 150,
+                      prompt_tokens: 120,
+                      completion_tokens: 30
+                    },
+                    request_count: 1
+                  },
+                  links: {
+                    self: `/api/results/${state.resultId}`,
+                    legacy_html: `/results/${state.resultId}`,
+                    excel_export: `/api/results/${state.resultId}/export.xlsx`,
+                    legacy_excel_export: `/export/excel/${state.resultId}`,
+                    frontend_html: `/app/results/${state.resultId}`
+                  }
+                }
+              ]
+            : []
+      });
+      return;
+    }
+
     if (path === `/api/tasks/${state.taskId}/cancel` && method === "POST") {
       state.cancelRequested = true;
       await fulfillJson(route, {
@@ -413,8 +491,8 @@ test.describe("standalone frontend flow", () => {
     await page.goto("/app/");
     await expect(page).toHaveURL(/\/app\/login$/);
 
-    await page.getByLabel("Password").fill("wrong-password");
-    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.getByLabel("Пароль").fill("wrong-password");
+    await page.getByRole("button", { name: "Войти" }).click();
 
     await expect(page).toHaveURL(/\/app\/login$/);
     await expect(page.getByText("Неверный пароль")).toBeVisible();
@@ -429,7 +507,7 @@ test.describe("standalone frontend flow", () => {
     await page.goto("/app/results/guarded-result");
 
     await expect(page).toHaveURL(/\/app\/login$/);
-    await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Вход в систему" })).toBeVisible();
   });
 
   test("completes login -> upload -> progress -> results under /app", async ({ page }) => {
@@ -437,32 +515,37 @@ test.describe("standalone frontend flow", () => {
 
     await page.goto("/app/");
     await expect(page).toHaveURL(/\/app\/login$/);
-    await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Вход в систему" })).toBeVisible();
 
-    await page.getByLabel("Password").fill("secret-password");
-    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.getByLabel("Пароль").fill("secret-password");
+    await page.getByRole("button", { name: "Войти" }).click();
 
     await expect(page).toHaveURL(/\/app\/$/);
-    await expect(page.getByRole("heading", { name: "Upload and monitor" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Загрузка и контроль анализа" })).toBeVisible();
 
-    await page.getByLabel(/choose a word or pdf file/i).setInputFiles({
+    await page.getByLabel(/выберите файл word или pdf/i).setInputFiles({
       name: "specification.pdf",
       mimeType: "application/pdf",
       buffer: Buffer.from("%PDF-1.4 mocked spec")
     });
-    await page.getByRole("button", { name: "Run analysis" }).click();
+    await page.getByRole("button", { name: "Запустить анализ" }).click();
 
     await expect(page).toHaveURL(/taskId=task-e2e-1/);
-    await expect(page.getByText(/task id: task-e2e-1/i)).toBeVisible();
+    await expect(page.getByText(/задача: task-e2e-1/i)).toBeVisible();
 
     await expect(page).toHaveURL(/\/app\/results\/result-e2e-1$/);
-    await expect(page.getByRole("heading", { name: "Analysis result" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Результат анализа" })).toBeVisible();
     await expect(page.getByText("Standalone frontend E2E")).toBeVisible();
     await expect(page.getByText("Browser flow")).toBeVisible();
-    await expect(page.getByRole("link", { name: "Export Excel" })).toHaveAttribute(
+    await expect(page.getByRole("link", { name: "Скачать Excel" })).toHaveAttribute(
       "href",
       "/api/results/result-e2e-1/export.xlsx"
     );
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Скачать PDF" }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe("result-e2e-1.pdf");
   });
 
   test("lets the user cancel a running task and reflects the durable canceled state", async ({ page }) => {
@@ -473,20 +556,20 @@ test.describe("standalone frontend flow", () => {
     });
 
     await page.goto("/app/");
-    await expect(page.getByRole("heading", { name: "Upload and monitor" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Загрузка и контроль анализа" })).toBeVisible();
 
-    await page.getByLabel(/choose a word or pdf file/i).setInputFiles({
+    await page.getByLabel(/выберите файл word или pdf/i).setInputFiles({
       name: "specification.pdf",
       mimeType: "application/pdf",
       buffer: Buffer.from("%PDF-1.4 mocked spec")
     });
-    await page.getByRole("button", { name: "Run analysis" }).click();
+    await page.getByRole("button", { name: "Запустить анализ" }).click();
 
     await expect(page).toHaveURL(/taskId=task-cancel-1/);
-    await page.getByRole("button", { name: "Cancel task" }).click();
+    await page.getByRole("button", { name: "Отменить задачу" }).click();
 
-    await expect(page.getByText("Task was canceled by user.")).toBeVisible();
-    await expect(page.getByText(/^canceled$/)).toBeVisible();
+    await expect(page.getByText("Задача была отменена пользователем.")).toBeVisible();
+    await expect(page.getByText(/^Отменено$/)).toBeVisible();
   });
 
   test("surfaces missing task recovery errors from a resumed URL", async ({ page }) => {
@@ -498,8 +581,8 @@ test.describe("standalone frontend flow", () => {
 
     await page.goto("/app/?taskId=missing-task");
 
-    await expect(page.getByRole("heading", { name: "Upload and monitor" })).toBeVisible();
-    await expect(page.getByText("Task not found")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Загрузка и контроль анализа" })).toBeVisible();
+    await expect(page.getByText("Задача не найдена")).toBeVisible();
   });
 
   test("shows an unavailable state when the backend result is missing", async ({ page }) => {
@@ -511,8 +594,43 @@ test.describe("standalone frontend flow", () => {
 
     await page.goto("/app/results/missing-result");
 
-    await expect(page.getByRole("heading", { name: "Result unavailable" })).toBeVisible();
-    await expect(page.getByText("Could not load result")).toBeVisible();
-    await expect(page.getByText("Result not found")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Результат недоступен" })).toBeVisible();
+    await expect(page.getByText("Не удалось загрузить результат")).toBeVisible();
+    await expect(page.getByText("Результат не найден")).toBeVisible();
+  });
+
+  test("shows recent completed results on the tasks dashboard", async ({ page }) => {
+    await installStandaloneApiMock(page, {
+      initiallyAuthenticated: true,
+      tasksDashboardMode: "with_recent_result"
+    });
+
+    await page.goto("/app/tasks");
+
+    await expect(page.getByRole("heading", { name: "Активные работы" })).toBeVisible();
+    await expect(page.getByText("Недавние результаты")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Открыть результат" })).toBeVisible();
+
+    await page.getByRole("link", { name: "Открыть результат" }).click();
+
+    await expect(page).toHaveURL(/\/app\/results\/result-e2e-1$/);
+    await expect(page.getByText("Standalone frontend E2E")).toBeVisible();
+  });
+
+  test("shows the dedicated results history page", async ({ page }) => {
+    await installStandaloneApiMock(page, {
+      initiallyAuthenticated: true,
+      resultsHistoryMode: "with_items"
+    });
+
+    await page.goto("/app/results");
+
+    await expect(page.getByRole("heading", { name: "История результатов" })).toBeVisible();
+    await expect(page.getByText("Standalone frontend E2E")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Открыть результат" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Скачать Excel" })).toHaveAttribute(
+      "href",
+      "/api/results/result-e2e-1/export.xlsx"
+    );
   });
 });

@@ -42,13 +42,13 @@ describe("TaskProgressPanel", () => {
       />
     );
 
-    expect(screen.getByText("Task progress")).toBeInTheDocument();
-    expect(screen.getByText(/task id: task-123/i)).toBeInTheDocument();
-    expect(screen.getByText("3210")).toBeInTheDocument();
+    expect(screen.getByText("Ход выполнения")).toBeInTheDocument();
+    expect(screen.getByText(/задача: task-123/i)).toBeInTheDocument();
+    expect(screen.getByText(/3\s?210/)).toBeInTheDocument();
     expect(screen.getByText("7")).toBeInTheDocument();
-    expect(screen.getByText("2 min 5 sec")).toBeInTheDocument();
-    expect(screen.getByText("1650 tok.")).toBeInTheDocument();
-    expect(screen.getByText(/requests: 3/i)).toBeInTheDocument();
-    expect(screen.getAllByText("Analyzing dependencies")).toHaveLength(3);
+    expect(screen.getByText("2 мин 5 с")).toBeInTheDocument();
+    expect(screen.getByText(/1\s?650 ток\./)).toBeInTheDocument();
+    expect(screen.getByText(/запросы: 3/i)).toBeInTheDocument();
+    expect(screen.getAllByText("Анализируем зависимости")).toHaveLength(3);
   });
 });

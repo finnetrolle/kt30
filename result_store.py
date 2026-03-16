@@ -211,6 +211,41 @@ class ResultStore:
         """
         return len(list(self.storage_dir.glob("*.json")))
 
+    def list_recent(self, limit: int = 50) -> list[Dict[str, Any]]:
+        """Return recent non-expired stored results ordered by save time.
+
+        Args:
+            limit: Maximum number of results to return
+
+        Returns:
+            Stored result dictionaries including internal metadata fields
+        """
+        entries: list[Dict[str, Any]] = []
+
+        try:
+            for filepath in self.storage_dir.glob("*.json"):
+                try:
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        stored_data = json.load(f)
+
+                    stored_at = stored_data.get("_stored_at", 0)
+                    if time.time() - stored_at > self.ttl_seconds:
+                        self._delete_file(filepath)
+                        continue
+
+                    entries.append(stored_data)
+                except Exception:
+                    self._delete_file(filepath)
+
+            entries.sort(key=lambda item: float(item.get("_stored_at", 0) or 0), reverse=True)
+        except Exception as e:
+            logger.error(f"Failed to list recent results: {e}")
+            return []
+
+        if limit > 0:
+            return entries[:limit]
+        return entries
+
 
 # Global instance — shared across the application
 _store_instance: Optional[ResultStore] = None

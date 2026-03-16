@@ -1,9 +1,12 @@
+import io
 import tempfile
+import time
 import unittest
 import types
 import sys
 import os
 from pathlib import Path
+from unittest import mock
 
 os.environ.setdefault("APP_ENV", "testing")
 
@@ -30,6 +33,7 @@ sys.modules.setdefault(
 
 from app import create_app
 from config import TestingConfig
+from job_queue import get_job_queue
 from progress_tracker import get_progress_store
 from result_store import get_result_store
 
@@ -164,6 +168,7 @@ class FrontendApiTests(unittest.TestCase):
             storage_root=LocalFrontendApiConfig.PROGRESS_STORAGE_DIR,
             ttl_seconds=LocalFrontendApiConfig.PROGRESS_TTL_SECONDS
         )
+        self.job_queue = get_job_queue(LocalFrontendApiConfig.JOB_QUEUE_DB_PATH)
         self.result_store = get_result_store(
             storage_dir=LocalFrontendApiConfig.RESULTS_STORAGE_DIR,
             ttl_seconds=LocalFrontendApiConfig.RESULT_TTL_SECONDS
@@ -185,6 +190,32 @@ class FrontendApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json()["error"], "No file provided")
+
+    def test_api_upload_queues_artifact_source_path_and_closes_upload(self):
+        with mock.patch("werkzeug.datastructures.FileStorage.close", autospec=True) as close_mock:
+            response = self.client.post(
+                "/api/uploads",
+                data={
+                    "file": (io.BytesIO(b"PK\x03\x04demo docx payload"), "ТЗ 4. - .docx")
+                },
+                content_type="multipart/form-data",
+                headers={"X-CSRF-Token": self._csrf_token()}
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertTrue(payload["task_id"])
+
+        job = self.job_queue.get(payload["task_id"])
+        self.assertIsNotNone(job)
+        self.assertTrue(os.path.isabs(job["payload"]["filepath"]))
+        self.assertIn("/analysis_runs/", job["payload"]["filepath"])
+        self.assertTrue(job["payload"]["filepath"].endswith("/source/4._-_.docx"))
+        self.assertTrue(os.path.isabs(job["payload"]["upload_filepath"]))
+        self.assertIn("/uploads/", job["payload"]["upload_filepath"])
+        self.assertTrue(os.path.exists(job["payload"]["filepath"]))
+        close_mock.assert_called()
 
     def test_api_progress_alias_streams_existing_events(self):
         tracker = self.progress_store.create("task-1")
@@ -229,18 +260,85 @@ class FrontendApiTests(unittest.TestCase):
         self.assertEqual(payload["result"]["project_info"]["calculated_duration_days"], 0)
         self.assertEqual(payload["result"]["dependencies_matrix"], [])
 
+    def test_api_results_history_returns_recent_entries(self):
+        self.result_store.save(
+            "result-1",
+            {
+                "filename": "first.docx",
+                "timestamp": "2026-03-14T10:00:00",
+                "result": {
+                    "project_info": {
+                        "project_name": "First project",
+                        "description": "First stored result",
+                        "complexity_level": "low"
+                    },
+                    "wbs": {
+                        "phases": []
+                    }
+                },
+                "usage": {},
+                "metadata": {},
+                "token_usage": {
+                    "totals": {
+                        "total_tokens": 100
+                    },
+                    "request_count": 1
+                }
+            }
+        )
+        time.sleep(0.01)
+        self.result_store.save(
+            "result-2",
+            {
+                "filename": "second.docx",
+                "timestamp": "2026-03-14T11:00:00",
+                "result": {
+                    "project_info": {
+                        "project_name": "Second project",
+                        "description": "Second stored result",
+                        "complexity_level": "medium"
+                    },
+                    "wbs": {
+                        "phases": []
+                    }
+                },
+                "usage": {},
+                "metadata": {},
+                "token_usage": {
+                    "totals": {
+                        "total_tokens": 200
+                    },
+                    "request_count": 2
+                }
+            }
+        )
+
+        response = self.client.get("/api/results")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["scope"], "history")
+        self.assertEqual([item["result_id"] for item in payload["items"]], ["result-2", "result-1"])
+        self.assertEqual(payload["items"][0]["project_name"], "Second project")
+        self.assertEqual(payload["items"][0]["links"]["frontend_html"], "/app/results/result-2")
+        self.assertEqual(payload["items"][1]["filename"], "first.docx")
+
     def test_frontend_app_serves_index_and_assets(self):
         root_response = self.client.get("/app")
+        history_response = self.client.get("/app/results")
         route_response = self.client.get("/app/results/result-1")
         asset_response = self.client.get("/app/assets/app.js")
 
         self.assertEqual(root_response.status_code, 200)
         self.assertIn("frontend shell", root_response.get_data(as_text=True))
+        self.assertEqual(history_response.status_code, 200)
+        self.assertIn("frontend shell", history_response.get_data(as_text=True))
         self.assertEqual(route_response.status_code, 200)
         self.assertIn("frontend shell", route_response.get_data(as_text=True))
         self.assertEqual(asset_response.status_code, 200)
         self.assertEqual(asset_response.get_data(as_text=True), "console.log('frontend');")
         root_response.close()
+        history_response.close()
         route_response.close()
         asset_response.close()
 

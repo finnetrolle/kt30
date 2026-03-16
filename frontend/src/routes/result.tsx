@@ -4,9 +4,11 @@ import { Link, useNavigate, useParams } from "@tanstack/react-router";
 
 import { ResultSummary } from "@/features/result-view/ResultSummary";
 import { getResult, getSession } from "@/shared/api/client";
+import { translateText } from "@/shared/lib/locale";
 import { EmptyState } from "@/shared/ui/EmptyState";
 import { LoadingState } from "@/shared/ui/LoadingState";
 import { PageShell } from "@/shared/ui/PageShell";
+import { Button } from "@/shared/ui/button";
 
 export function ResultPage() {
   const navigate = useNavigate();
@@ -35,39 +37,48 @@ export function ResultPage() {
   }, [navigate, sessionQuery.data]);
 
   if (sessionQuery.isLoading) {
-    return <LoadingState title="Checking session" message="Confirming access to the requested result." />;
+    return <LoadingState title="Проверяем сессию" message="Подтверждаем доступ к выбранному результату." />;
   }
 
   if (sessionQuery.data?.auth_enabled && !sessionQuery.data.authenticated) {
-    return <LoadingState title="Redirecting to sign in" message="The requested result requires an authenticated session." />;
+    return <LoadingState title="Перенаправляем на вход" message="Для просмотра результата нужна активная авторизованная сессия." />;
   }
 
   if (resultQuery.isError) {
     return (
       <PageShell
-        title="Result unavailable"
-        description="The backend could not return the requested result."
+        title="Результат недоступен"
+        description="Сервер не смог вернуть запрошенный результат."
       >
         <EmptyState
-          title="Could not load result"
-          message={resultQuery.error instanceof Error ? resultQuery.error.message : "Unknown error"}
+          title="Не удалось загрузить результат"
+          message={
+            resultQuery.error instanceof Error
+              ? translateText(resultQuery.error.message, resultQuery.error.message)
+              : "Неизвестная ошибка"
+          }
         />
       </PageShell>
     );
   }
 
   if (resultQuery.isLoading || !deferredPayload) {
-    return <LoadingState title="Loading result" message="Fetching the latest WBS payload from Flask." />;
+    return <LoadingState title="Загружаем результат" message="Получаем актуальные данные ИСР из Flask." />;
   }
 
   return (
     <PageShell
-      title="Analysis result"
-      description="This route already uses the new headless result view-model."
+      title="Результат анализа"
+      description="Здесь показана новая модель результата с экспортом и подробной структурой ИСР."
       actions={
-        <Link to="/" className="secondary-button">
-          New analysis
-        </Link>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button asChild variant="secondary">
+            <Link to="/results">История результатов</Link>
+          </Button>
+          <Button asChild variant="secondary">
+            <Link to="/">Новый анализ</Link>
+          </Button>
+        </div>
       }
     >
       <ResultSummary payload={deferredPayload} />
