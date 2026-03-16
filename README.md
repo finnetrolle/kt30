@@ -1,458 +1,508 @@
-# Technical Specification Analyzer
+# KT30
 
-Приложение для анализа технических заданий из Microsoft Word и PDF файлов и автоматического создания Work Breakdown Structure (WBS) с использованием OpenAI API.
+KT30 - это приложение для анализа технических заданий из `.docx` и `.pdf` с генерацией WBS/ИСР, оценок, рисков и итоговых артефактов через OpenAI-совместимый API.
 
-## Возможности
+Текущее состояние проекта:
 
-- 📤 Загрузка документов Word (.doc, .docx) и PDF
-- 🤖 Автоматический анализ технического задания с помощью ИИ
-- 📊 Генерация детальной структуры работ (WBS)
-- ⏱️ Оценка трудозатрат для каждой задачи
-- ⚠️ Выявление рисков проекта
-- 💡 Рекомендации по реализации
-- 📥 Экспорт результатов в JSON и Excel
-- 🔄 **Стабилизация результатов для получения повторяемых оценок**
-- 🧩 **Chunked-анализ ТЗ и параллельная детализация пакетов работ**
-- 🔌 **Поддержка OpenAI-совместимых API (локальные LLM, другие провайдеры)**
+- Flask backend с headless API
+- standalone React/Vite frontend, который считается основным UI
+- durable очередь задач на SQLite
+- отдельный worker для production и Docker Compose
+- SSE-прогресс, история результатов и панель активных задач
+- optional password auth, CSRF, rate limiting и базовые security headers
+
+## Что умеет приложение
+
+- загружать `.docx` и `.pdf` файлы размером до 16 МБ
+- проверять не только расширение, но и сигнатуру файла
+- запускать анализ асинхронно через очередь задач
+- показывать живой прогресс анализа через SSE
+- восстанавливать in-flight задачу после refresh по `taskId` в URL
+- генерировать WBS с фазами, пакетами работ, задачами, зависимостями и оценками
+- показывать риски, assumptions, рекомендации и token usage
+- хранить результаты и промежуточные артефакты на диске с TTL-cleanup
+- экспортировать результат в Excel на backend и в JSON/PDF из frontend
+- работать как с OpenAI API, так и с локальными OpenAI-совместимыми LLM
+
+## Архитектура
+
+```text
+Browser (/app) or Vite dev server
+        |
+        v
+Flask web/API layer (app.py)
+  - upload/auth/results/tasks/health/ready
+  - CSRF + rate limits + security headers
+  - SSE for task progress
+        |
+        +--> SQLite job queue + worker heartbeats
+        +--> file storage: uploads / analysis_runs / progress_data / results_data / runtime
+        |
+        v
+Worker (embedded in development or separate worker.py in production)
+        |
+        v
+document_parser.py + multi-agent pipeline + OpenAI-compatible API
+```
+
+Ключевой нюанс текущей версии: web-процесс больше не выполняет тяжелый анализ синхронно. Он сохраняет upload, ставит задачу в durable queue и отдает `task_id`. Анализ выполняется worker-процессом, а frontend читает устойчивый статус через `/api/tasks/<task_id>` и поток событий через SSE.
+
+## Основные компоненты
+
+- `app.py` - Flask-приложение, API, auth, SSE, health/readiness
+- `worker.py` - отдельный entrypoint фонового worker-процесса
+- `job_queue.py` - durable SQLite-backed очередь задач
+- `job_worker.py` - polling loop и lease/heartbeat логика worker-а
+- `analysis_jobs.py` - общий runtime для выполнения analysis job
+- `agents/` - multi-agent pipeline для анализа ТЗ и построения WBS
+- `frontend/` - основной standalone frontend на React + Vite + TypeScript
+- `result_store.py`, `progress_tracker.py`, `run_artifacts.py` - файловое хранение результатов, прогресса и run artifacts
+- `ops/` - healthcheck scripts и production runbook
+- `deploy/systemd/` - готовые unit-файлы для web и worker
 
 ## Требования
 
-- Python 3.8+
-- OpenAI API ключ (или ключ совместимого API)
+- Python 3.12+ рекомендуется
+- Node.js 20+ для работы с `frontend/`
+- npm для frontend-зависимостей
+- OpenAI API key или другой OpenAI-совместимый endpoint
 
-## Установка
+Поддерживаемые форматы входных файлов:
 
-1. Клонируйте репозиторий или скопируйте файлы проекта
+- `.docx`
+- `.pdf`
 
-2. Создайте виртуальное окружение:
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-# или
-.venv\Scripts\activate  # Windows
-```
+`.doc` сейчас не поддерживается.
 
-3. Установите зависимости:
-```bash
-pip install -r requirements.txt
-```
+## Быстрый старт через Docker Compose
 
-4. Создайте файл конфигурации:
+Это основной и самый близкий к production способ локального запуска.
+
+1. Создайте конфиг:
+
 ```bash
 cp .env.example .env
 ```
 
-5. Отредактируйте `.env` файл и укажите ваш API ключ:
-```
-OPENAI_API_KEY=your-openai-api-key-here
-```
-
-## Конфигурация
-
-### Основные параметры
-
-| Параметр | Описание | По умолчанию |
-|----------|----------|--------------|
-| `SECRET_KEY` | Секретный ключ Flask | - |
-| `DEBUG` | Режим отладки | False |
-| `OPENAI_API_KEY` | API ключ OpenAI | - |
-| `OPENAI_API_BASE` | Базовый URL API | https://api.openai.com/v1 |
-| `OPENAI_MODEL` | Модель для использования | gpt-4 |
-| `LLM_PROFILE` | Профиль модели: `default` или `small` | `default` |
-| `OPENAI_JSON_MODE` | Режим JSON для ответов | true |
-| `LLM_MAX_PARALLEL_REQUESTS` | Максимум параллельных LLM-запросов | 4 |
-| `ANALYSIS_CHUNK_CHARS` | Размер фрагмента ТЗ для chunked-анализа | 6000 |
-| `UPLOAD_FOLDER` | Папка для загрузок | uploads |
-| `MAX_CONTENT_LENGTH` | Макс. размер файла (байт) | 16777216 (16MB) |
-| `WBS_TEMPLATE_PATH` | Путь к шаблону WBS | wbs_template.md |
-
-### Поддержка OpenAI-совместимых API
-
-Приложение поддерживает любые OpenAI-совместимые API:
+2. Заполните как минимум:
 
 ```env
-# Для локальных LLM серверов (Ollama, LM Studio, и т.д.)
-OPENAI_API_BASE=http://localhost:11434/v1
-OPENAI_API_KEY=not-needed
-OPENAI_MODEL=llama3
-OPENAI_JSON_MODE=false
-
-# Для других провайдеров (Azure OpenAI, Anthropic, и т.д.)
-OPENAI_API_BASE=https://your-provider.com/v1
-OPENAI_API_KEY=your-api-key
-OPENAI_MODEL=your-model-name
-OPENAI_JSON_MODE=false
+OPENAI_API_KEY=your-key
+OPENAI_API_BASE=https://api.openai.com/v1
+OPENAI_MODEL=gpt-4
+OPENAI_JSON_MODE=true
 ```
 
-> **Важно:** Параметр `OPENAI_JSON_MODE=false` необходим для локальных LLM и других API, которые не поддерживают режим `json_object` в ответах.
-
-### Настройки стабилизации результатов
-
-Для решения проблемы разных результатов при повторной обработке одного ТЗ добавлена система стабилизации:
-
-| Параметр | Описание | По умолчанию |
-|----------|----------|--------------|
-| `STABILIZATION_MODE` | Режим стабилизации | `validate` |
-| `ENSEMBLE_ITERATIONS` | Количество итераций для ensemble | 3 |
-| `CONSENSUS_METHOD` | Метод консенсуса | `median` |
-| `OUTLIER_THRESHOLD` | Порог отсева выбросов (std dev) | 2.0 |
-| `AUTO_NORMALIZE` | Автонормализация значений | true |
-| `APPLY_RULES_VALIDATION` | Применить валидацию по справочнику | true |
-| `MIN_CONFIDENCE_SCORE` | Мин. confidence для принятия | 0.7 |
-| `ESTIMATION_RULES_PATH` | Путь к справочнику трудозатрат | data/estimation_rules.json |
-
-#### Режимы стабилизации
-
-1. **`single`** - Один проход без стабилизации
-   - Самый быстрый режим
-   - Наименее стабильные результаты
-   - Подходит для тестирования
-
-2. **`validate`** *(рекомендуется для разработки)*
-   - Один проход с валидацией
-   - Проверка по справочнику трудозатрат
-   - Нормализация значений
-   - Хороший баланс скорости и стабильности
-
-3. **`ensemble`**
-   - Множественные проходы (3+)
-   - Вычисление консенсуса (медиана)
-   - Отсев выбросов
-   - Высокая стабильность
-
-4. **`ensemble_validate`** *(рекомендуется для продакшена)*
-   - Ensemble + валидация
-   - Максимальная стабильность
-   - Самый медленный режим
-
-### Chunked и parallel pipeline
-
-Начиная с текущей версии система больше не отправляет всё ТЗ и весь WBS одним большим запросом по основному пути:
-
-- Аналитик разбивает ТЗ на небольшие фрагменты и может анализировать их параллельно
-- После этого выполняется компактный синтез общего анализа
-- Планировщик сначала строит компактный каркас WBS, затем отдельно детализирует пакеты работ
-- Детализация пакетов работ выполняется небольшими независимыми запросами и может идти параллельно
-
-Это снижает задержку на медленных или локальных LLM и уменьшает риск таймаутов на длинных промптах.
-
-### Профиль small LLM
-
-Для моделей до 30B рекомендуется включать:
-
-```env
-LLM_PROFILE=small
-OPENAI_JSON_MODE=false
-STABILIZATION_MODE=validate
-```
-
-Что меняется в этом профиле:
-
-- уменьшаются размеры chunk'ов и `max_tokens`
-- по умолчанию снижается параллелизм до 2 запросов
-- отключается LLM-synthesis итогового анализа, итог собирается кодом
-- отключается LLM-skeleton WBS, каркас WBS строится детерминированно
-- LLM используется в основном для маленьких задач детализации пакетов работ
-- LLM-семантическая валидация по умолчанию отключается
-
-Это делает пайплайн более устойчивым на локальных и компактных моделях.
-
-## Требования к моделям
-
-Для корректной работы агентов модель не обязана быть “reasoning model”, но должна уверенно справляться со следующими задачами:
-
-- Строгое следование инструкциям: модель должна возвращать только JSON без пояснений.
-- Короткое структурированное извлечение фактов: требования, риски, ограничения, роли.
-- Стабильная работа на русском языке.
-- Контекст не меньше 8k токенов, желательно 16k+ для комфортной работы с chunked pipeline.
-- Умение держать локальную причинно-следственную связь внутри маленького фрагмента ТЗ.
-- Умение декомпозировать один пакет работ на 2-5 атомарных задач.
-
-### Что желательно
-
-- Поддержка `response_format=json_object` или хотя бы стабильная генерация валидного JSON в plain-text режиме.
-- Низкая склонность к “болтливым” ответам вне схемы.
-- Хорошая repeatability на `temperature=0`.
-- Адекватная работа с технической терминологией: API, интеграции, роли, тестирование, деплой.
-
-### Что не требуется
-
-- Встроенный tool use / function calling. Приложение не делегирует модели вызовы инструментов.
-- Сложный многошаговый reasoning на уровне больших reasoning-моделей. Основная стратегия смещена в сторону маленьких статeless-запросов и детерминированной сборки результата в коде.
-- Очень большое окно контекста. Основной путь уже разрезает документ и WBS на компактные части.
-
-### Практически подходящие классы моделей
-
-- Инструкционные модели 7B-14B для базового качества и быстрого чернового плана.
-- Более сильные 14B-30B модели для более точной декомпозиции задач и лучшей стабильности JSON.
-- Локальные OpenAI-совместимые сервера, которые умеют принимать chat-completions запросы.
-
-## Запуск
-
-### Режим разработки
+3. Поднимите web + worker:
 
 ```bash
-python app.py
+docker compose up -d --build
 ```
 
-Приложение будет доступно по адресу: http://localhost:8000
+4. Откройте:
 
-### Отдельный frontend в рамках миграции
+- UI: `http://localhost:8000/app/`
+- health: `http://localhost:8000/health`
+- ready: `http://localhost:8000/ready`
 
-В репозитории появился новый React/Vite frontend в каталоге `frontend/`.
+Compose-конфигурация уже запускает:
 
-Запуск в dev-режиме:
+- отдельный `app` сервис
+- отдельный `worker` сервис
+- встроенный frontend build внутри Docker image
+- shared named volumes для `uploads`, `results_data`, `progress_data`, `analysis_runs`, `runtime`
+
+Полезные команды:
+
+```bash
+docker compose ps
+docker compose logs -f app worker
+docker compose down
+```
+
+## Локальная разработка
+
+### Вариант 1: backend + встроенный worker + собранный frontend
+
+Подходит, если вы хотите открывать приложение через Flask на `http://localhost:8000/app/`.
+
+1. Установите backend-зависимости:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+2. Установите frontend-зависимости и соберите frontend:
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
+```
+
+3. Создайте `.env`:
+
+```bash
+cp .env.example .env
+```
+
+4. Запустите backend:
+
+```bash
+make run-web
+```
+
+По умолчанию в `APP_ENV=development` включен `EMBEDDED_WORKER_ENABLED=true`, поэтому отдельный `worker.py` обычно не нужен.
+
+Важно: если `frontend/dist` не собран и вы не запустили Vite dev server, Flask вернет error page вместо UI.
+
+### Вариант 2: backend + Vite dev server
+
+Подходит для активной работы над frontend.
+
+Терминал 1:
+
+```bash
+make run-web
+```
+
+Терминал 2:
 
 ```bash
 cd frontend
 npm install
 npm run dev
+```
+
+Открывайте приложение по адресу `http://localhost:5173/app/`.
+
+Vite проксирует на backend:
+
+- `/api`
+- `/health`
+- `/ready`
+
+### Вариант 3: production-like локально
+
+Если хотите локально проверить схему с отдельным worker:
+
+```bash
+EMBEDDED_WORKER_ENABLED=false make run-web
+EMBEDDED_WORKER_ENABLED=false make run-worker
+```
+
+Или:
+
+```bash
+make run-gunicorn
+make run-worker
+```
+
+## Frontend в текущем состоянии
+
+`frontend/` больше не просто миграционный черновик. Сейчас там уже основной UI приложения:
+
+- `/app/` - загрузка и отслеживание анализа
+- `/app/login` - вход, если включен `APP_AUTH_PASSWORD`
+- `/app/tasks` - список активных задач и недавних завершенных работ
+- `/app/results` - история сохраненных результатов
+- `/app/results/:resultId` - просмотр результата
+
+Frontend умеет:
+
+- восстанавливать задачу по `taskId` после reload
+- показывать live progress и fallback на polling для совместимости с браузером
+- скачивать Excel, JSON и PDF
+- печатать результат
+- открывать raw JSON API результата
+
+## Конфигурация
+
+Базовый шаблон находится в `.env.example`.
+
+### Самые важные переменные
+
+| Переменная | Назначение | По умолчанию/заметка |
+| --- | --- | --- |
+| `APP_ENV` | `development`, `production`, `testing` | `development` |
+| `SECRET_KEY` | Flask session secret | в production должен быть задан явно |
+| `APP_AUTH_PASSWORD` | включает password auth для UI и API | пустое значение отключает auth |
+| `OPENAI_API_KEY` | API key провайдера | обязателен для большинства провайдеров |
+| `OPENAI_API_BASE` | базовый URL OpenAI-совместимого API | `https://api.openai.com/v1` |
+| `OPENAI_MODEL` | имя модели | в шаблоне `gpt-4` |
+| `OPENAI_JSON_MODE` | использовать `response_format=json_object` | для official OpenAI обычно `true`, для local LLM чаще `false` |
+| `LLM_PROFILE` | профиль `default` или `small` | `default` |
+| `EMBEDDED_WORKER_ENABLED` | запускать worker в процессе web | по умолчанию `true` в development, `false` в production |
+| `SERVE_FRONTEND_BUILD` | раздавать `frontend/dist` через Flask | `true` |
+| `FRONTEND_DIST_DIR` | путь к production build frontend | `frontend/dist` |
+| `FRONTEND_ROUTE_PREFIX` | base path standalone frontend | `app` |
+| `MAX_CONTENT_LENGTH` | максимальный размер upload | `16777216` байт |
+
+### Хранилища и runtime
+
+| Переменная | Назначение |
+| --- | --- |
+| `RUNTIME_DIR` | корень runtime-состояния |
+| `UPLOAD_FOLDER` | временные исходные uploads |
+| `ARTIFACTS_ROOT` | артефакты каждого analysis run |
+| `RESULTS_STORAGE_DIR` | сохраненные результаты |
+| `PROGRESS_STORAGE_DIR` | persisted progress и event log |
+| `JOB_QUEUE_DB_PATH` | SQLite queue |
+| `RATE_LIMIT_DB_PATH` | SQLite rate limiter |
+
+### TTL и cleanup
+
+| Переменная | Что хранит |
+| --- | --- |
+| `RESULT_TTL_SECONDS` | срок жизни результатов |
+| `PROGRESS_TTL_SECONDS` | срок жизни progress state |
+| `ARTIFACT_RETENTION_SECONDS` | срок жизни run artifacts |
+| `JOB_RETENTION_SECONDS` | срок хранения записей о задачах |
+| `JOB_STALE_AFTER_SECONDS` | когда running job считается stale и может быть requeued |
+| `WORKER_POLL_INTERVAL_SECONDS` | задержка между poll-итерациями worker-а |
+
+### OpenAI / local LLM примеры
+
+Official OpenAI:
+
+```env
+OPENAI_API_BASE=https://api.openai.com/v1
+OPENAI_API_KEY=your-key
+OPENAI_MODEL=gpt-4
+OPENAI_JSON_MODE=true
+```
+
+Local LLM без Docker:
+
+```env
+OPENAI_API_BASE=http://127.0.0.1:1234/v1
+OPENAI_API_KEY=not-needed
+OPENAI_MODEL=your-local-model
+OPENAI_JSON_MODE=false
+LLM_PROFILE=small
+```
+
+Local LLM из Docker Compose:
+
+```env
+OPENAI_API_BASE=http://host.docker.internal:1234/v1
+OPENAI_API_KEY=not-needed
+OPENAI_MODEL=your-local-model
+OPENAI_JSON_MODE=false
+LLM_PROFILE=small
+```
+
+## Multi-agent pipeline и режимы работы LLM
+
+Сейчас backend использует multi-agent pipeline как основной путь, а старый single-agent режим остается fallback-механизмом при ошибке orchestration.
+
+Внутри пайплайна уже есть:
+
+- chunked-анализ ТЗ
+- параллельная обработка фрагментов
+- построение skeleton WBS
+- генерация work packages и задач
+- валидация и нормализация результата
+- сбор token usage и conversation artifacts
+
+### `LLM_PROFILE=small`
+
+Профиль `small` предназначен для локальных и компактных моделей. Он уменьшает размеры chunk-ов и токенные лимиты, снижает параллелизм и по умолчанию отключает часть дорогостоящих LLM-этапов.
+
+### Режимы стабилизации
+
+| Режим | Назначение |
+| --- | --- |
+| `single` | один проход, минимум стабилизации |
+| `validate` | один проход + валидация и нормализация |
+| `ensemble` | несколько проходов + консенсус |
+| `ensemble_validate` | ensemble + валидация |
+
+Текущий нюанс:
+
+- в `.env.example` указан `STABILIZATION_MODE=validate`
+- `ProductionConfig` по умолчанию тянет `ensemble_validate`, если env не переопределяет значение
+
+## Хранение данных
+
+Во время выполнения задачи используются несколько каталогов:
+
+- `uploads/` - исходный временный upload
+- `analysis_runs/` - артефакты конкретного запуска, включая копию исходного файла и JSON-артефакты этапов
+- `progress_data/` - persisted progress state и SSE events
+- `results_data/` - итоговые результаты, доступные через history и result pages
+- `runtime/` - SQLite базы очереди и rate limiter
+
+Важный operational detail: для схемы с отдельным `app` и `worker` эти каталоги должны быть общими и writable для обоих процессов.
+
+## HTTP API и маршруты
+
+### UI и compatibility routes
+
+| Route | Что делает |
+| --- | --- |
+| `/` | redirect в standalone frontend |
+| `/login` | compatibility route для логина |
+| `/results/<result_id>` | compatibility route результата |
+| `/app/*` | основной standalone frontend |
+
+### Auth API
+
+| Endpoint | Method | Описание |
+| --- | --- | --- |
+| `/api/auth/session` | `GET` | состояние сессии, auth и csrf |
+| `/api/auth/csrf` | `GET` | выдает CSRF token |
+| `/api/auth/login` | `POST` | логин в API/frontend |
+| `/api/auth/logout` | `POST` | logout |
+
+### Upload / tasks
+
+| Endpoint | Method | Описание |
+| --- | --- | --- |
+| `/api/uploads` | `POST` | основной upload endpoint |
+| `/upload` | `POST` | legacy alias upload |
+| `/api/tasks/<task_id>` | `GET` | устойчивый статус задачи |
+| `/api/tasks/<task_id>/events` | `GET` | SSE поток прогресса |
+| `/progress/<task_id>` | `GET` | legacy alias SSE |
+| `/api/tasks` | `GET` | операторский список активных задач |
+| `/api/tasks/<task_id>/cancel` | `POST` | запрос на отмену задачи |
+
+### Results
+
+| Endpoint | Method | Описание |
+| --- | --- | --- |
+| `/api/results` | `GET` | история последних результатов |
+| `/api/results/<result_id>` | `GET` | результат в JSON |
+| `/api/results/<result_id>/export.xlsx` | `GET` | экспорт Excel |
+| `/export/excel/<result_id>` | `GET` | legacy alias Excel export |
+
+### Health
+
+| Endpoint | Method | Описание |
+| --- | --- | --- |
+| `/health` | `GET` | liveness и worker health summary |
+| `/ready` | `GET` | readiness с проверкой директорий, SQLite DB и доступности worker-а |
+
+Все небезопасные методы (`POST` и др.) защищены CSRF. Для API-клиента сначала нужно получить токен через `/api/auth/csrf`, затем передавать его в заголовке `X-CSRF-Token`.
+
+## Безопасность в текущей версии
+
+- optional password auth через `APP_AUTH_PASSWORD`
+- CSRF protection для всех unsafe request-ов
+- basic rate limiting для login, upload, progress и cancel
+- security headers: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Content-Security-Policy`
+- в production включается `Strict-Transport-Security` для secure request-ов
+- проверка file signature для `.docx` и `.pdf`
+
+## Тесты и полезные команды
+
+Backend:
+
+```bash
+make compile
+make test
+make test-all
+```
+
+Frontend:
+
+```bash
+cd frontend
 npm test
 npm run test:e2e
 ```
 
-По умолчанию frontend будет доступен на `http://localhost:5173` и проксировать API в Flask на `http://localhost:8000`.
-Так как base path синхронизирован с `FRONTEND_ROUTE_PREFIX=app`, открывать его нужно по адресу `http://localhost:5173/app/`.
+Примечания:
 
-После сборки frontend можно раздавать через Flask по префиксу `/app`:
+- backend тесты написаны на `unittest`
+- frontend unit/component тесты идут через `Vitest`
+- e2e идут через `Playwright`
+- текущий Playwright config ожидает локально доступный Chrome channel
 
-```bash
-cd frontend
-npm run build
-```
-
-И включить в `.env`:
-
-```env
-SERVE_FRONTEND_BUILD=true
-FRONTEND_DIST_DIR=frontend/dist
-FRONTEND_ROUTE_PREFIX=app
-```
-
-Standalone frontend теперь:
-
-- собирается с корректным base path для `/app`
-- умеет восстанавливать `taskId` из URL и повторно подключаться к progress flow после refresh
-- имеет `Vitest`-покрытие для upload, progress, result view и API client
-- имеет `Playwright` e2e для сквозного standalone flow `login -> upload -> progress -> results`
-- покрывает edge-cases нового UI: auth failure, cancel task, missing task/result recovery
-- является основным UI приложения; `/`, `/login` и `/results/<id>` теперь редиректят в standalone frontend
-
-### Продакшн (с Gunicorn)
+Health и smoke:
 
 ```bash
-gunicorn -w 4 -b 0.0.0.0:8000 app:app
-```
-
-Для production-режима анализ теперь должен выполняться отдельным worker-процессом:
-
-```bash
-python worker.py
-```
-
-`app.py` отвечает только за web/API/SSE слой и постановку задач в durable queue.
-
-### Docker
-
-1. Убедитесь, что файл `.env` создан и заполнен (см. раздел «Установка»).
-
-2. Запустите web и worker сервисы:
-```bash
-docker compose up -d
-```
-
-3. Приложение будет доступно по адресу: http://localhost:8000
-4. Проверить готовность web-процесса можно через `GET /ready`
-
-Для пересборки образа после изменений:
-```bash
-docker compose up -d --build
-```
-
-Для остановки:
-```bash
-docker compose down
-```
-
-Проверка готовности контейнеров:
-
-```bash
-docker compose ps
 python ops/healthcheck_web.py
 python ops/healthcheck_worker.py
-```
-
-### Makefile
-
-Для типовых операций доступны команды:
-
-```bash
-make test-all
-make run-web
-make run-worker
-make compose-build
 make smoke
 ```
 
-## Использование
+Docker и Compose:
 
-1. Откройте веб-браузер и перейдите по адресу http://localhost:8000
-2. Загрузите документ Word или PDF с техническим заданием
-3. Нажмите кнопку "Анализировать"
-4. Дождитесь обработки (обычно 10-60 секунд в зависимости от режима)
-5. Просмотрите результаты анализа:
-   - Информация о проекте
-   - Фазы и рабочие пакеты WBS
-   - Риски проекта
-   - Предположения
-   - Рекомендации
-6. Экспортируйте результаты в Excel или JSON
-
-## Структура проекта
-
+```bash
+make docker-build
+make compose-up
+make compose-build
+make compose-down
+make compose-logs
 ```
+
+## CI
+
+GitHub Actions в текущем репозитории запускает:
+
+- backend compile check
+- backend unit tests
+- Docker image build
+
+Frontend тесты пока не входят в корневой CI workflow.
+
+## Production notes
+
+Для production сейчас предусмотрены два основных сценария:
+
+- Docker Compose
+- systemd unit-файлы из `deploy/systemd/`
+
+Минимальные требования к production-конфигурации:
+
+- `APP_ENV=production`
+- явный `SECRET_KEY`
+- `EMBEDDED_WORKER_ENABLED=false`
+- запущены и web, и worker
+- shared writable storage для `uploads`, `analysis_runs`, `progress_data`, `results_data`, `runtime`
+
+Рекомендуемые проверки после деплоя:
+
+1. `GET /health` возвращает `200`
+2. `GET /ready` возвращает `200`
+3. `checks.worker_available=true`
+4. загружается тестовый `.docx` или `.pdf`
+5. результат открывается и скачивается в Excel
+
+Подробности эксплуатации находятся в `ops/RUNBOOK.md`.
+
+## Ограничения текущей архитектуры
+
+- очередь задач и rate limiting сейчас основаны на SQLite и shared filesystem
+- это хороший pragmatic вариант для single-host или shared-volume deployment
+- для полноценного multi-node production следующим шагом архитектуры будут внешние сервисы вроде Redis/Postgres/object storage
+
+## Структура репозитория
+
+```text
 .
-├── app.py                 # Основное Flask приложение
-├── worker.py              # Entry point отдельного worker-процесса
-├── job_queue.py           # Durable очередь задач на SQLite
-├── job_worker.py          # Worker loop для выполнения анализа
-├── analysis_jobs.py       # Общая логика выполнения analysis job
-├── rate_limiter.py        # Межпроцессный rate limiter
-├── Makefile               # Типовые команды разработки и эксплуатации
-├── ops/                   # Healthcheck scripts и runbook
-├── deploy/                # Примеры systemd unit-файлов
-├── .github/workflows/     # CI pipeline
-├── frontend/              # Отдельный React/Vite frontend
-├── config.py              # Конфигурация
-├── document_parser.py     # Парсер Word и PDF документов
-├── openai_client.py       # Клиент OpenAI API
-├── excel_export.py        # Экспорт в Excel
-├── requirements.txt       # Зависимости Python
-├── wbs_template.md        # Шаблон структуры WBS
-├── .env.example           # Пример конфигурации
-├── agents/                # Мульти-агентная система
-│   ├── __init__.py
-│   ├── base_agent.py      # Базовый класс агента
-│   ├── analyst_agent.py   # Агент-аналитик ТЗ
-│   ├── planner_agent.py   # Агент-планировщик WBS
-│   ├── validator_agent.py # Агент-валидатор
-│   ├── result_stabilizer.py # Стабилизация результатов
-│   └── agent_orchestrator.py # Оркестратор агентов
-
-## Deployment Artifacts
-
-- `deploy/systemd/` содержит `kt30-web.service`, `kt30-worker.service` и пример env-файла.
-- `ops/RUNBOOK.md` содержит production checklist, smoke test и incident response.
-├── data/
-│   └── estimation_rules.json # Справочник трудозатрат
-├── templates/
-│   └── error.html         # Страница ошибки
-└── uploads/               # Папка для загруженных файлов
+├── app.py
+├── worker.py
+├── analysis_jobs.py
+├── job_queue.py
+├── job_worker.py
+├── config.py
+├── openai_client.py
+├── document_parser.py
+├── result_store.py
+├── progress_tracker.py
+├── run_artifacts.py
+├── agents/
+├── frontend/
+├── ops/
+├── deploy/systemd/
+├── tests/
+├── Dockerfile
+├── docker-compose.yml
+├── Makefile
+└── .env.example
 ```
-
-## Мульти-агентная архитектура
-
-Система использует несколько специализированных агентов:
-
-### 1. Analyst Agent (Аналитик)
-- Анализирует техническое задание
-- Извлекает функциональные и нефункциональные требования
-- Определяет риски и предположения
-- Формирует вопросы для уточнения
-
-### 2. Planner Agent (Планировщик)
-- Создает структуру WBS на основе анализа
-- Определяет фазы проекта
-- Разбивает работы на пакеты и задачи
-- Оценивает трудозатраты
-
-### 3. Validator Agent (Валидатор)
-- Проверяет корректность структуры WBS
-- Валидирует оценки по справочнику
-- Нормализует значения
-- Вычисляет confidence score
-
-### 4. Result Stabilizer
-- Выполняет множественные генерации
-- Вычисляет консенсус (медиана/среднее)
-- Удаляет выбросы
-- Обеспечивает стабильность результатов
-
-## Справочник трудозатрат
-
-Файл `data/estimation_rules.json` содержит типовые оценки для:
-
-- Типовых задач (авторизация, CRUD, формы и т.д.)
-- Соотношений фаз проекта
-- Множителей сложности
-- Базовых оценок для типов проектов
-
-Пример использования справочника:
-```json
-{
-  "task_templates": {
-    "Авторизация": {
-      "min_hours": 8,
-      "max_hours": 24,
-      "typical_hours": 16
-    }
-  }
-}
-```
-
-## Как достичь стабильных результатов
-
-### Рекомендация 1: Используйте режим ensemble_validate
-
-```env
-STABILIZATION_MODE=ensemble_validate
-ENSEMBLE_ITERATIONS=3
-```
-
-Это обеспечит:
-- 3 независимые генерации WBS
-- Вычисление медианы для всех числовых значений
-- Валидацию по справочнику
-- Отсев выбросов
-
-### Рекомендация 2: Настройте справочник трудозатрат
-
-Отредактируйте `data/estimation_rules.json` под ваши проекты:
-- Добавьте типовые задачи вашего домена
-- Настройте диапазоны часов
-- Определите множители сложности
-
-### Рекомендация 3: Проверяйте confidence score
-
-Результаты с низким confidence (< 0.7) требуют внимания:
-- Возможно, ТЗ недостаточно детально
-- Требуется ручная корректировка оценок
-
-## API Endpoints
-
-| Endpoint | Method | Описание |
-|----------|--------|----------|
-| `/` | GET | Redirect в standalone frontend (`/app/`) |
-| `/app/*` | GET | Основной standalone frontend UI |
-| `/upload` | POST | Совместимый alias загрузки документа |
-| `/api/uploads` | POST | Основной API endpoint загрузки документа |
-| `/results/<id>` | GET | Совместимый redirect в `/app/results/<id>` |
-| `/api/results/<id>` | GET | Получение результатов в JSON |
-| `/api/results/<id>/export.xlsx` | GET | Основной Excel export endpoint |
-| `/export/excel/<id>` | GET | Совместимый alias Excel export |
-| `/health` | GET | Health check |
-
-## Поддерживаемые форматы файлов
-
-| Формат | Расширения | Описание |
-|--------|------------|----------|
-| Microsoft Word | .docx | Полная поддержка |
-| PDF | .pdf | Извлечение текста |
-
-## Лицензия
-
-MIT License
-
-## Автор
-
-Technical Specification Analyzer © 2024-2026
