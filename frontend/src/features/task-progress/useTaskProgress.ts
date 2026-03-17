@@ -1,12 +1,16 @@
 import { useEffect, useEffectEvent, useState } from "react";
 
-import type { TaskEvent, TaskStageUsage, TokenUsageBucket } from "@/entities/task/model";
-import { createTaskEventSource } from "@/shared/api/client";
+import type { TaskEvent, TaskProgressSnapshot, TaskStageUsage, TokenUsageBucket } from "@/entities/task/model";
+import { createTaskEventSource, getTaskProgressSnapshot } from "@/shared/api/client";
+import { isDocumentVisible } from "@/shared/lib/browser";
 import { translateText } from "@/shared/lib/locale";
 
 interface UseTaskProgressOptions {
   taskId: string | null;
   enabled?: boolean;
+  streamingEnabled?: boolean;
+  pollIntervalMs?: number;
+  compactSnapshot?: boolean;
   onComplete?: (event: TaskEvent) => void;
 }
 
@@ -34,9 +38,12 @@ const INITIAL_STATE: TaskProgressState = {
 
 const RECONNECTING_MESSAGE = "Соединение прервалось. Ждем переподключения к потоку событий...";
 const STREAM_STOPPED_MESSAGE =
-  "Живой поток временно остановлен для защиты браузера. Статус задачи продолжает обновляться опросом.";
+  "Поток событий недоступен, поэтому показываем сохраненный журнал и обновляем его опросом.";
+const WORKER_UNAVAILABLE_MESSAGE =
+  "Воркер недоступен: задача стоит в очереди, но журнал и статус продолжают обновляться.";
 const MAX_VISIBLE_EVENTS = 60;
 const MAX_STREAM_ERRORS = 6;
+const SNAPSHOT_POLL_INTERVAL_MS = 3000;
 
 function normalizeUsageBucket(usage: unknown): TokenUsageBucket {
   if (!usage || typeof usage !== "object") {
@@ -59,12 +66,75 @@ function upsertStageUsage(stageUsage: TaskStageUsage[], entry: TaskStageUsage) {
   return next;
 }
 
-function appendVisibleEvent(events: TaskEvent[], event: TaskEvent) {
+function appendVisibleEvent(events: TaskEvent[], event: TaskEvent, maxVisibleEvents: number) {
   const next = [...events, event];
-  return next.length > MAX_VISIBLE_EVENTS ? next.slice(next.length - MAX_VISIBLE_EVENTS) : next;
+  return next.length > maxVisibleEvents ? next.slice(next.length - maxVisibleEvents) : next;
 }
 
-export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskProgressOptions) {
+function normalizeEvent(event: TaskEvent): TaskEvent {
+  return {
+    ...event,
+    data: event.data ?? {}
+  };
+}
+
+function sortStageUsage(stageUsage: TaskStageUsage[]) {
+  const next = [...stageUsage];
+  next.sort((left, right) => left.stage_id - right.stage_id);
+  return next;
+}
+
+function mergeEvents(current: TaskEvent[], nextEvents: TaskEvent[], maxVisibleEvents: number) {
+  const merged = new Map<string, TaskEvent>();
+
+  for (const event of [...current, ...nextEvents]) {
+    const normalized = normalizeEvent(event);
+    const key = `${normalized.type}-${normalized.timestamp}-${normalized.message}`;
+    merged.set(key, normalized);
+  }
+
+  return Array.from(merged.values())
+    .sort((left, right) => left.timestamp - right.timestamp)
+    .slice(-maxVisibleEvents);
+}
+
+function snapshotWarning(snapshot: TaskProgressSnapshot) {
+  if (snapshot.status === "queued" && !snapshot.worker_available) {
+    return WORKER_UNAVAILABLE_MESSAGE;
+  }
+
+  return null;
+}
+
+function applySnapshot(
+  current: TaskProgressState,
+  snapshot: TaskProgressSnapshot,
+  maxVisibleEvents: number,
+  compactSnapshot: boolean
+): TaskProgressState {
+  const stage = snapshot.current_stage ? translateText(snapshot.current_stage) : current.stage;
+  const warning = snapshotWarning(snapshot);
+  const nextError = warning ?? (current.error === WORKER_UNAVAILABLE_MESSAGE ? null : current.error);
+
+  return {
+    ...current,
+    stage,
+    events: mergeEvents(current.events, snapshot.events, maxVisibleEvents),
+    totalTokens: Number(snapshot.overall_usage.total_tokens ?? current.totalTokens),
+    requestCount: Number(snapshot.request_count ?? current.requestCount),
+    stageUsage: compactSnapshot ? [] : sortStageUsage(snapshot.stage_usage),
+    error: nextError
+  };
+}
+
+export function useTaskProgress({
+  taskId,
+  enabled = true,
+  streamingEnabled = true,
+  pollIntervalMs = SNAPSHOT_POLL_INTERVAL_MS,
+  compactSnapshot = false,
+  onComplete
+}: UseTaskProgressOptions) {
   const [state, setState] = useState<TaskProgressState>(INITIAL_STATE);
   const onCompleteEvent = useEffectEvent((event: TaskEvent) => {
     onComplete?.(event);
@@ -76,6 +146,8 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
       return;
     }
 
+    const activeTaskId = taskId;
+
     if (!enabled) {
       setState((current) => ({
         ...current,
@@ -85,9 +157,9 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
     }
 
     setState({
-      stage: "Подключаемся к потоку воркера...",
+      stage: streamingEnabled ? "Подключаемся к потоку воркера..." : "Загружаем сохраненный журнал...",
       events: [],
-      isStreaming: true,
+      isStreaming: Boolean(streamingEnabled),
       totalTokens: 0,
       requestCount: 0,
       elapsedSeconds: 0,
@@ -95,9 +167,56 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
       error: null
     });
 
-    const eventSource = createTaskEventSource(taskId);
+    let isDisposed = false;
+    let eventSource: EventSource | null = null;
     let consecutiveStreamErrors = 0;
     let streamClosed = false;
+    let snapshotPollId: number | null = null;
+    const maxVisibleEvents = compactSnapshot ? 15 : MAX_VISIBLE_EVENTS;
+
+    async function refreshSnapshot() {
+      try {
+        const snapshot = await getTaskProgressSnapshot(activeTaskId, { compact: compactSnapshot });
+        if (isDisposed) {
+          return;
+        }
+        setState((current) => applySnapshot(current, snapshot, maxVisibleEvents, compactSnapshot));
+      } catch {
+        if (isDisposed) {
+          return;
+        }
+        setState((current) => ({
+          ...current,
+          error: current.events.length > 0 ? current.error : STREAM_STOPPED_MESSAGE
+        }));
+      }
+    }
+
+    function ensurePolling() {
+      if (snapshotPollId !== null) {
+        return;
+      }
+      snapshotPollId = window.setInterval(() => {
+        if (!isDocumentVisible()) {
+          return;
+        }
+        void refreshSnapshot();
+      }, pollIntervalMs);
+    }
+
+    void refreshSnapshot();
+
+    if (!streamingEnabled) {
+      ensurePolling();
+      return () => {
+        isDisposed = true;
+        if (snapshotPollId !== null) {
+          window.clearInterval(snapshotPollId);
+        }
+      };
+    }
+
+    eventSource = createTaskEventSource(activeTaskId);
 
     function parseEvent(rawEvent: MessageEvent<string>): TaskEvent {
       return JSON.parse(rawEvent.data) as TaskEvent;
@@ -112,12 +231,13 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
       noteActivity();
       setState((current) => ({
         ...current,
-        events: appendVisibleEvent(current.events, event),
-        error: current.error === RECONNECTING_MESSAGE ? null : current.error,
+        events: appendVisibleEvent(current.events, event, maxVisibleEvents),
+        error:
+          current.error === RECONNECTING_MESSAGE || current.error === STREAM_STOPPED_MESSAGE ? null : current.error,
         stage: translateText(event.message),
         totalTokens: Number(event.data.overall_usage?.total_tokens ?? current.totalTokens),
         stageUsage:
-          typeof event.data.stage_id === "number"
+          !compactSnapshot && typeof event.data.stage_id === "number"
             ? upsertStageUsage(current.stageUsage, {
                 stage_id: event.data.stage_id,
                 message: translateText(event.message),
@@ -133,8 +253,9 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
       noteActivity();
       setState((current) => ({
         ...current,
-        events: appendVisibleEvent(current.events, event),
-        error: current.error === RECONNECTING_MESSAGE ? null : current.error
+        events: appendVisibleEvent(current.events, event, maxVisibleEvents),
+        error:
+          current.error === RECONNECTING_MESSAGE || current.error === STREAM_STOPPED_MESSAGE ? null : current.error
       }));
     });
 
@@ -143,8 +264,9 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
       noteActivity();
       setState((current) => ({
         ...current,
-        events: appendVisibleEvent(current.events, event),
-        error: current.error === RECONNECTING_MESSAGE ? null : current.error
+        events: appendVisibleEvent(current.events, event, maxVisibleEvents),
+        error:
+          current.error === RECONNECTING_MESSAGE || current.error === STREAM_STOPPED_MESSAGE ? null : current.error
       }));
     });
 
@@ -153,11 +275,13 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
       noteActivity();
       setState((current) => ({
         ...current,
-        error: current.error === RECONNECTING_MESSAGE ? null : current.error,
+        events: appendVisibleEvent(current.events, event, maxVisibleEvents),
+        error:
+          current.error === RECONNECTING_MESSAGE || current.error === STREAM_STOPPED_MESSAGE ? null : current.error,
         totalTokens: Number(event.data.overall_usage?.total_tokens ?? current.totalTokens),
         requestCount: Number(event.data.request_count ?? current.requestCount),
         stageUsage:
-          typeof event.data.stage_id === "number"
+          !compactSnapshot && typeof event.data.stage_id === "number"
             ? upsertStageUsage(current.stageUsage, {
                 stage_id: event.data.stage_id,
                 message:
@@ -177,16 +301,17 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
       streamClosed = true;
       setState((current) => ({
         ...current,
-        events: appendVisibleEvent(current.events, event),
-        error: current.error === RECONNECTING_MESSAGE ? null : current.error,
+        events: appendVisibleEvent(current.events, event, maxVisibleEvents),
+        error:
+          current.error === RECONNECTING_MESSAGE || current.error === STREAM_STOPPED_MESSAGE ? null : current.error,
         stage: translateText(event.message),
         isStreaming: false,
         totalTokens: Number(event.data.usage_summary?.totals.total_tokens ?? current.totalTokens),
         requestCount: Number(event.data.usage_summary?.request_count ?? current.requestCount),
-        stageUsage: event.data.usage_summary?.stages ?? current.stageUsage
+        stageUsage: compactSnapshot ? current.stageUsage : event.data.usage_summary?.stages ?? current.stageUsage
       }));
       onCompleteEvent(event);
-      eventSource.close();
+      eventSource?.close();
     });
 
     eventSource.addEventListener("error", (rawEvent) => {
@@ -199,15 +324,15 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
       streamClosed = true;
       setState((current) => ({
         ...current,
-        events: appendVisibleEvent(current.events, event),
+        events: appendVisibleEvent(current.events, event, maxVisibleEvents),
         stage: "Анализ завершился с ошибкой",
         isStreaming: false,
         totalTokens: Number(event.data.usage_summary?.totals.total_tokens ?? current.totalTokens),
         requestCount: Number(event.data.usage_summary?.request_count ?? current.requestCount),
-        stageUsage: event.data.usage_summary?.stages ?? current.stageUsage,
+        stageUsage: compactSnapshot ? current.stageUsage : event.data.usage_summary?.stages ?? current.stageUsage,
         error: translateText(event.message)
       }));
-      eventSource.close();
+      eventSource?.close();
     });
 
     eventSource.onerror = () => {
@@ -219,7 +344,9 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
 
       if (consecutiveStreamErrors >= MAX_STREAM_ERRORS) {
         streamClosed = true;
-        eventSource.close();
+        eventSource?.close();
+        ensurePolling();
+        void refreshSnapshot();
         setState((current) => ({
           ...current,
           isStreaming: false,
@@ -235,9 +362,13 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
     };
 
     return () => {
-      eventSource.close();
+      isDisposed = true;
+      eventSource?.close();
+      if (snapshotPollId !== null) {
+        window.clearInterval(snapshotPollId);
+      }
     };
-  }, [taskId, enabled, onCompleteEvent]);
+  }, [taskId, enabled, streamingEnabled, pollIntervalMs, compactSnapshot, onCompleteEvent]);
 
   useEffect(() => {
     if (!taskId || !state.isStreaming) {
@@ -245,6 +376,9 @@ export function useTaskProgress({ taskId, enabled = true, onComplete }: UseTaskP
     }
 
     const timerId = window.setInterval(() => {
+      if (!isDocumentVisible()) {
+        return;
+      }
       setState((current) => ({
         ...current,
         elapsedSeconds: current.elapsedSeconds + 2

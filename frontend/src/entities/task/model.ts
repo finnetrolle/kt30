@@ -25,6 +25,29 @@ export interface UsageSummary {
 }
 
 export interface TaskEventPayload {
+  agent?: string;
+  model?: string;
+  request_id?: string;
+  worker_id?: string;
+  llm_event?: string;
+  attempt?: number;
+  max_tokens?: number;
+  temperature?: number;
+  elapsed_seconds?: number;
+  retry_in_seconds?: number;
+  queue_wait_seconds?: number;
+  prompt_preview?: string;
+  response_preview?: string;
+  prompt_characters?: number;
+  response_characters?: number;
+  system_prompt_preview?: string;
+  system_prompt_characters?: number;
+  job_status?: string;
+  worker_available?: boolean;
+  worker_health?: {
+    healthy_workers?: number;
+    known_workers?: number;
+  } | null;
   result_id?: string;
   redirect_url?: string;
   usage_summary?: UsageSummary;
@@ -43,6 +66,25 @@ export interface TaskEvent {
   message: string;
   timestamp: number;
   data: TaskEventPayload;
+}
+
+export interface TaskProgressSnapshot {
+  task_id: string;
+  status?: TaskLifecycleStatus | null;
+  current_stage?: string | null;
+  current_stage_id?: number | null;
+  request_count: number;
+  overall_usage: TokenUsageBucket;
+  stage_usage: TaskStageUsage[];
+  events: TaskEvent[];
+  completed: boolean;
+  error: boolean;
+  artifacts_dir?: string | null;
+  worker_available: boolean;
+  worker_health?: {
+    healthy_workers?: number;
+    known_workers?: number;
+  } | null;
 }
 
 export type TaskLifecycleStatus = "queued" | "running" | "succeeded" | "failed" | "canceled" | string;

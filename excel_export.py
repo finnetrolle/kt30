@@ -3,13 +3,11 @@ Excel export module for WBS (Work Breakdown Structure).
 Generates Excel files with work packages, roles, hours, costs, and Gantt chart.
 """
 import logging
+import re
 from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
-from openpyxl.chart import BarChart, Reference
-from openpyxl.chart.series import DataPoint
-from openpyxl.chart.label import DataLabelList
 from wbs_utils import canonicalize_wbs_result
 
 logger = logging.getLogger(__name__)
@@ -18,38 +16,52 @@ logger = logging.getLogger(__name__)
 # These can be customized on the second sheet of the Excel file
 DEFAULT_ROLE_RATES = {
     "Проектный менеджер": 1500,
-    "Бизнес-аналитик": 1200,
     "Системный аналитик": 1300,
     "Архитектор": 2000,
-    "Разработчик (Frontend)": 1000,
-    "Разработчик (Backend)": 1100,
-    "Разработчик (Full-stack)": 1200,
-    "UI/UX дизайнер": 1000,
-    "Тестировщик (QA)": 800,
-    "DevOps инженер": 1500,
+    "Frontend-разработчик": 1000,
+    "Backend-разработчик": 1100,
+    "Data Engineer": 1200,
+    "QA-инженер": 900,
+    "DevOps": 1500,
     "Администратор БД": 1400,
+    "Специалист ИБ": 1300,
     "Технический писатель": 700,
-    "Руководитель проекта": 1800,
-    "Scrum мастер": 1200,
-    "Аналитик": 1200,
     "Дизайнер": 1000,
-    "Разработчик": 1100,
-    "Тестировщик": 800,
-    "Инженер": 1200,
 }
 
 # Role aliases for normalization
 ROLE_ALIASES = {
-    "Frontend разработчик": "Разработчик (Frontend)",
-    "Backend разработчик": "Разработчик (Backend)",
-    "Full-stack разработчик": "Разработчик (Full-stack)",
-    "QA инженер": "Тестировщик (QA)",
-    "QA": "Тестировщик (QA)",
+    "Frontend разработчик": "Frontend-разработчик",
+    "Разработчик (Frontend)": "Frontend-разработчик",
+    "Backend разработчик": "Backend-разработчик",
+    "Разработчик (Backend)": "Backend-разработчик",
+    "Full-stack разработчик": "Backend-разработчик",
+    "Разработчик (Full-stack)": "Backend-разработчик",
+    "QA инженер": "QA-инженер",
+    "Тестировщик": "QA-инженер",
+    "Тестировщик (QA)": "QA-инженер",
+    "QA": "QA-инженер",
     "PM": "Проектный менеджер",
-    "БА": "Бизнес-аналитик",
+    "Руководитель проекта": "Проектный менеджер",
+    "Scrum мастер": "Проектный менеджер",
+    "БА": "Системный аналитик",
     "СА": "Системный аналитик",
     "БД": "Администратор БД",
     "DBA": "Администратор БД",
+    "DevOps инженер": "DevOps",
+    "BI-разработчик": "Data Engineer",
+    "Инженер БД": "Администратор БД",
+    "Архитектор ПО": "Архитектор",
+    "Архитектор данных": "Архитектор",
+    "Архитектор безопасности": "Архитектор",
+    "Интеграционный архитектор": "Архитектор",
+    "Интеграционный разработчик": "Backend-разработчик",
+    "Инженер инфраструктуры": "DevOps",
+    "Инженер надежности": "DevOps",
+    "Инженер развертывания": "DevOps",
+    "Performance Engineer": "QA-инженер",
+    "Инженер по нагрузке": "QA-инженер",
+    "Pentester": "Специалист ИБ",
 }
 
 
@@ -74,6 +86,10 @@ def calculate_project_duration_with_parallel(wbs_data: dict) -> dict:
     
     for phase in wbs_data.get('phases', []):
         phase_id = phase.get('id', '')
+        phase_duration = phase.get('duration', 0) or phase.get('duration_days', 0)
+        if not phase_duration:
+            hours = phase.get('estimated_hours', 0)
+            phase_duration = max(1, hours // 8)
         phase_start = current_day
         
         # Track parallel work packages
@@ -132,7 +148,7 @@ def calculate_project_duration_with_parallel(wbs_data: dict) -> dict:
                 
                 parallel_task_end = max(parallel_task_end, task_end)
             
-            wp_end = wp_start + wp_duration
+            wp_end = max(wp_start + wp_duration, parallel_task_end)
             item_end_days[wp_id] = wp_end
             
             if not can_parallel:
@@ -140,7 +156,7 @@ def calculate_project_duration_with_parallel(wbs_data: dict) -> dict:
             
             parallel_wp_end = max(parallel_wp_end, wp_end)
         
-        actual_phase_end = parallel_wp_end
+        actual_phase_end = parallel_wp_end if phase.get('work_packages') else phase_start + phase_duration
         phase_durations[phase_id] = actual_phase_end - phase_start
         current_day = actual_phase_end
     
@@ -248,14 +264,76 @@ def normalize_role(role_name: str) -> str:
     Returns:
         Normalized role name
     """
+    if not role_name:
+        return role_name
+
+    role_name = str(role_name).strip()
+
     # Check aliases first
     if role_name in ROLE_ALIASES:
         return ROLE_ALIASES[role_name]
-    
+
+    normalized_key = re.sub(r"[^a-zA-Zа-яА-Я0-9+]+", " ", role_name.casefold()).strip()
+
+    keyword_groups = [
+        (
+            "Проектный менеджер",
+            ("project manager", "project lead", "product manager", "delivery manager", "pm", "scrum", "менеджер проекта", "менеджер продукта", "руководитель проекта", "руководитель программы", "проектн"),
+        ),
+        (
+            "Системный аналитик",
+            ("business analyst", "system analyst", "systems analyst", "analyst", "product analyst", "аналитик", "бизнес аналитик", "системный аналитик", "бизнес аналитик", "бизнес-аналитик"),
+        ),
+        (
+            "Архитектор",
+            ("architect", "solution architect", "software architect", "enterprise architect", "data architect", "integration architect", "архитектор", "solution architecture"),
+        ),
+        (
+            "Специалист ИБ",
+            ("security", "infosec", "cyber", "pentest", "penetration", "appsec", "devsecops", "secops", "иб", "информационной безопасности", "кибербезопас", "пентест", "безопасност"),
+        ),
+        (
+            "Администратор БД",
+            ("postgres", "postgresql", "sql", "oracle", "mysql", "clickhouse", "greenplum", "mongodb", "database", "database administrator", "database engineer", "dba", "db admin", "db engineer", "субд", "бд", "база данных"),
+        ),
+        (
+            "DevOps",
+            ("devops", "sre", "platform engineer", "infra", "infrastructure", "site reliability", "release engineer", "deployment", "kubernetes", "docker", "terraform", "ansible", "ci cd", "ci/cd", "инфраструкт", "надежност", "развертыван", "эксплуатац"),
+        ),
+        (
+            "Data Engineer",
+            ("data engineer", "analytics engineer", "etl", "elt", "dwh", "warehouse", "bi", "spark", "hadoop", "airflow", "data platform", "данных", "витрин", "хранилищ", "аналитическ"),
+        ),
+        (
+            "Frontend-разработчик",
+            ("frontend", "front end", "react", "vue", "angular", "ui", "ux", "web", "веб", "фронтенд", "интерфейс"),
+        ),
+        (
+            "Backend-разработчик",
+            ("backend", "back end", "full stack", "fullstack", "developer", "engineer", "api", "service", "integration developer", "бэкенд", "сервер", "интеграционн", "разработчик", "программист"),
+        ),
+        (
+            "QA-инженер",
+            ("qa", "quality assurance", "test engineer", "tester", "testing", "performance engineer", "load engineer", "тест", "qa инженер", "контроль качества", "нагруз"),
+        ),
+        (
+            "Технический писатель",
+            ("technical writer", "documentation", "doc writer", "writer", "документац", "технический писатель"),
+        ),
+        (
+            "Дизайнер",
+            ("designer", "product designer", "ui designer", "ux designer", "дизайнер"),
+        ),
+    ]
+
+    for canonical_role, keywords in keyword_groups:
+        if any(keyword in normalized_key for keyword in keywords):
+            return canonical_role
+
     # Check if role exists in default rates
     if role_name in DEFAULT_ROLE_RATES:
         return role_name
-    
+
     # Return original if no normalization found
     return role_name
 
@@ -270,10 +348,18 @@ def get_role_rate(role_name: str, custom_rates: dict = None) -> int:
     Returns:
         Hourly rate for the role
     """
-    if custom_rates and role_name in custom_rates:
-        return custom_rates[role_name]
-    
     normalized = normalize_role(role_name)
+
+    if custom_rates:
+        if role_name in custom_rates:
+            return custom_rates[role_name]
+        if normalized in custom_rates:
+            return custom_rates[normalized]
+
+        normalized_custom_rates = {normalize_role(key): value for key, value in custom_rates.items()}
+        if normalized in normalized_custom_rates:
+            return normalized_custom_rates[normalized]
+
     if normalized in DEFAULT_ROLE_RATES:
         return DEFAULT_ROLE_RATES[normalized]
     
@@ -331,7 +417,10 @@ def extract_all_work_items(wbs_data: dict) -> list:
             'type': 'phase',
             'hours': phase.get('estimated_hours', 0),
             'skills': phase.get('skills_required', []),
+            'description': phase.get('description', ''),
+            'requirement_ids': [],
             'level': 0,
+            'parent_id': None,
             'can_start_parallel': False,
             'dependencies': []
         })
@@ -344,7 +433,10 @@ def extract_all_work_items(wbs_data: dict) -> list:
                 'type': 'work_package',
                 'hours': wp.get('estimated_hours', 0),
                 'skills': wp.get('skills_required', []),
+                'description': wp.get('description', ''),
+                'requirement_ids': wp.get('requirement_ids', []),
                 'level': 1,
+                'parent_id': phase.get('id', ''),
                 'can_start_parallel': wp.get('can_start_parallel', False),
                 'dependencies': wp.get('dependencies', [])
             })
@@ -357,7 +449,10 @@ def extract_all_work_items(wbs_data: dict) -> list:
                     'type': 'task',
                     'hours': task.get('estimated_hours', 0),
                     'skills': task.get('skills_required', []) or wp.get('skills_required', []),
+                    'description': task.get('description', ''),
+                    'requirement_ids': task.get('requirement_ids', []) or wp.get('requirement_ids', []),
                     'level': 2,
+                    'parent_id': wp.get('id', ''),
                     'can_start_parallel': task.get('can_start_parallel', False),
                     'dependencies': task.get('dependencies', [])
                 })
@@ -392,6 +487,100 @@ def distribute_hours_by_role(hours: int, skills: list) -> dict:
     return {role: hours_per_role for role in unique_skills}
 
 
+def build_children_index(work_items: list) -> dict:
+    """Build a parent -> children index for work items."""
+    children_by_parent = {}
+
+    for item in work_items:
+        parent_id = item.get('parent_id')
+        if not parent_id:
+            continue
+        children_by_parent.setdefault(parent_id, []).append(item)
+
+    return children_by_parent
+
+
+def build_sum_formula(column_letter: str, row_numbers: list) -> str:
+    """Build a compact SUM formula for arbitrary row numbers."""
+    if not row_numbers:
+        return "=0"
+
+    sorted_rows = sorted(set(row_numbers))
+    ranges = []
+    start = sorted_rows[0]
+    end = start
+
+    for row_number in sorted_rows[1:]:
+        if row_number == end + 1:
+            end = row_number
+            continue
+        if start == end:
+            ranges.append(f"{column_letter}{start}")
+        else:
+            ranges.append(f"{column_letter}{start}:{column_letter}{end}")
+        start = end = row_number
+
+    if start == end:
+        ranges.append(f"{column_letter}{start}")
+    else:
+        ranges.append(f"{column_letter}{start}:{column_letter}{end}")
+
+    return "=SUM(" + ",".join(ranges) + ")"
+
+
+def build_requirement_lookup(result_data: dict) -> dict:
+    """Build a lookup for requirement text by requirement id."""
+    lookup = {}
+    analysis = result_data.get("analysis", {}) if isinstance(result_data, dict) else {}
+
+    for collection_name in ("functional_requirements", "non_functional_requirements"):
+        for requirement in analysis.get(collection_name, []) or []:
+            requirement_id = str(requirement.get("id", "")).strip()
+            if not requirement_id:
+                continue
+            name = str(requirement.get("name", "")).strip()
+            description = str(requirement.get("description", "")).strip()
+
+            if name and description and description != name:
+                text = f"{requirement_id}: {name}. {description}"
+            elif name:
+                text = f"{requirement_id}: {name}"
+            elif description:
+                text = f"{requirement_id}: {description}"
+            else:
+                continue
+
+            lookup[requirement_id] = text
+
+    return lookup
+
+
+def build_requirement_excerpt(item: dict, requirement_lookup: dict, children_by_parent: dict) -> str:
+    """Build an excerpt showing which requirement(s) this work item implements."""
+    requirement_ids = [str(req_id).strip() for req_id in item.get("requirement_ids", []) if str(req_id).strip()]
+
+    if not requirement_ids and item.get("id") in children_by_parent:
+        for child in children_by_parent.get(item["id"], []):
+            for req_id in child.get("requirement_ids", []):
+                req_id = str(req_id).strip()
+                if req_id and req_id not in requirement_ids:
+                    requirement_ids.append(req_id)
+
+    excerpts = []
+    for requirement_id in requirement_ids:
+        text = requirement_lookup.get(requirement_id)
+        if text and text not in excerpts:
+            excerpts.append(text)
+
+    if excerpts:
+        if len(excerpts) > 3:
+            excerpts = excerpts[:3] + [f"... еще {len(excerpts) - 3} треб."]
+        return "\n".join(excerpts)
+
+    fallback = str(item.get("description", "")).strip() or str(item.get("name", "")).strip()
+    return fallback
+
+
 def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
     """Create Excel file with WBS data.
     
@@ -409,6 +598,7 @@ def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
     # Get WBS data
     normalized_result = canonicalize_wbs_result(result_data)
     wbs_data = normalized_result.get('wbs', {}) if normalized_result else {}
+    requirement_lookup = build_requirement_lookup(normalized_result)
     
     # Extract roles and work items
     all_roles = extract_all_roles(wbs_data)
@@ -440,7 +630,7 @@ def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
     )
     
     # Create headers
-    headers = ["№ работы", "Название работы", "Паралл."] + all_roles + ["Стоимость (руб)"]
+    headers = ["№ работы", "Название работы", "Цитата из требований", "Паралл."] + all_roles + ["Стоимость (руб)"]
     
     for col, header in enumerate(headers, 1):
         cell = ws_wbs.cell(row=1, column=col, value=header)
@@ -452,18 +642,20 @@ def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
     # Set column widths
     ws_wbs.column_dimensions['A'].width = 12  # ID
     ws_wbs.column_dimensions['B'].width = 40  # Name
-    ws_wbs.column_dimensions['C'].width = 8   # Parallel indicator
+    ws_wbs.column_dimensions['C'].width = 60  # Requirement quote
+    ws_wbs.column_dimensions['D'].width = 8   # Parallel indicator
     
-    for i, role in enumerate(all_roles, 4):
+    for i, role in enumerate(all_roles, 5):
         col_letter = get_column_letter(i)
         ws_wbs.column_dimensions[col_letter].width = 15
     
     ws_wbs.column_dimensions[get_column_letter(len(headers))].width = 18  # Cost
     
-    # Track totals
-    role_totals = {role: 0 for role in all_roles}
-    total_cost = 0
-    
+    children_by_parent = build_children_index(work_items)
+    parent_ids = set(children_by_parent)
+    leaf_ids = {item['id'] for item in work_items if item['id'] not in parent_ids}
+    row_by_item_id = {item['id']: index for index, item in enumerate(work_items, start=2)}
+
     # Add work items
     row = 2
     for item in work_items:
@@ -493,54 +685,73 @@ def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
         cell.alignment = Alignment(wrap_text=True)
         if fill:
             cell.fill = fill
+
+        requirement_excerpt = build_requirement_excerpt(item, requirement_lookup, children_by_parent)
+        cell = ws_wbs.cell(row=row, column=3, value=requirement_excerpt)
+        cell.font = task_font if item['type'] == 'task' else font
+        cell.border = border
+        cell.alignment = Alignment(wrap_text=True, vertical='top')
+        if fill:
+            cell.fill = fill
         
         # Parallel indicator column
         can_parallel = item.get('can_start_parallel', False)
         parallel_text = "🔄" if can_parallel else ""
-        cell = ws_wbs.cell(row=row, column=3, value=parallel_text)
+        cell = ws_wbs.cell(row=row, column=4, value=parallel_text)
         cell.font = font
         cell.border = border
         cell.alignment = Alignment(horizontal='center')
         if fill:
             cell.fill = fill
-        
-        # Distribute hours among roles
-        hours_by_role = distribute_hours_by_role(item['hours'], item['skills'])
-        
+
         # Build the cost formula that references rates from Sheet 2
         cost_formula_parts = []
-        
-        # Role hours columns (start from column 4 now)
-        for col, role in enumerate(all_roles, 4):
-            hours = hours_by_role.get(role, 0)
-            cell = ws_wbs.cell(row=row, column=col, value=round(hours, 1) if hours > 0 else 0)
+        is_leaf = item['id'] in leaf_ids
+
+        if is_leaf:
+            hours_by_role = distribute_hours_by_role(item['hours'], item['skills'])
+        else:
+            hours_by_role = {}
+
+        # Role hours columns (start from column 5 now)
+        for col, role in enumerate(all_roles, 5):
+            col_letter = get_column_letter(col)
+
+            if is_leaf:
+                hours = hours_by_role.get(role, 0)
+                cell_value = round(hours, 1) if hours > 0 else 0
+            else:
+                child_rows = [row_by_item_id[child['id']] for child in children_by_parent.get(item['id'], [])]
+                cell_value = build_sum_formula(col_letter, child_rows)
+                hours = None
+
+            cell = ws_wbs.cell(row=row, column=col, value=cell_value)
             cell.font = font
             cell.border = border
             cell.alignment = Alignment(horizontal='center')
             if fill:
                 cell.fill = fill
-            # Hide zero values
-            if hours == 0:
+            # Hide zero values on leaf rows.
+            if is_leaf and hours == 0:
                 cell.number_format = '0.0;0.0;'  # Format to hide zero values
-            
-            # Update totals
-            role_totals[role] += hours
-            
+
             # Build formula part: hours * VLOOKUP for rate
-            # Only add to formula if there are hours
-            if hours > 0:
-                col_letter = get_column_letter(col)
+            if is_leaf and hours > 0:
                 # VLOOKUP formula to find rate for this role in 'Ставки профессий' sheet
                 formula_part = f"IF({col_letter}{row}=0,0,{col_letter}{row}*VLOOKUP(\"{role}\",'Ставки профессий'!$A:$B,2,FALSE))"
                 cost_formula_parts.append(formula_part)
         
         # Cost column with formula
         cost_col = len(headers)
-        if cost_formula_parts:
+        if is_leaf and cost_formula_parts:
             cost_formula = "=" + "+".join(cost_formula_parts)
             cell = ws_wbs.cell(row=row, column=cost_col, value=cost_formula)
-        else:
+        elif is_leaf:
             cell = ws_wbs.cell(row=row, column=cost_col, value=0)
+        else:
+            child_rows = [row_by_item_id[child['id']] for child in children_by_parent.get(item['id'], [])]
+            cost_formula = build_sum_formula(get_column_letter(cost_col), child_rows)
+            cell = ws_wbs.cell(row=row, column=cost_col, value=cost_formula)
         cell.font = font
         cell.border = border
         cell.alignment = Alignment(horizontal='right')
@@ -557,24 +768,30 @@ def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
     totals_row = row
     
     # Label
-    cell = ws_wbs.cell(row=row, column=1, value="ИТОГО")
+    cell = ws_wbs.cell(row=row, column=1, value="")
+    cell.fill = total_fill
+    cell.border = border
+
+    cell = ws_wbs.cell(row=row, column=2, value="ИТОГО")
     cell.font = total_font
     cell.fill = total_fill
     cell.border = border
-    
-    cell = ws_wbs.cell(row=row, column=2, value="")
-    cell.fill = total_fill
-    cell.border = border
-    
+
     # Parallel column in totals
     cell = ws_wbs.cell(row=row, column=3, value="")
     cell.fill = total_fill
     cell.border = border
-    
-    # Role totals with SUM formulas (start from column 4)
-    for col, role in enumerate(all_roles, 4):
+
+    cell = ws_wbs.cell(row=row, column=4, value="")
+    cell.fill = total_fill
+    cell.border = border
+
+    leaf_rows = [row_by_item_id[item_id] for item_id in sorted(leaf_ids, key=lambda item_id: row_by_item_id[item_id])]
+
+    # Role totals with SUM formulas (start from column 5)
+    for col, role in enumerate(all_roles, 5):
         col_letter = get_column_letter(col)
-        formula = f"=SUM({col_letter}2:{col_letter}{data_end_row})"
+        formula = build_sum_formula(col_letter, leaf_rows)
         cell = ws_wbs.cell(row=row, column=col, value=formula)
         cell.font = total_font
         cell.fill = total_fill
@@ -584,7 +801,7 @@ def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
     
     # Total cost with SUM formula
     cost_col_letter = get_column_letter(len(headers))
-    cost_formula = f"=SUM({cost_col_letter}2:{cost_col_letter}{data_end_row})"
+    cost_formula = build_sum_formula(cost_col_letter, leaf_rows)
     cell = ws_wbs.cell(row=row, column=len(headers), value=cost_formula)
     cell.font = total_font
     cell.fill = total_fill
@@ -592,8 +809,8 @@ def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
     cell.alignment = Alignment(horizontal='right')
     cell.number_format = '#,##0'
     
-    # Freeze header row
-    ws_wbs.freeze_panes = 'A2'
+    ws_wbs.freeze_panes = 'E2'
+    ws_wbs.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{data_end_row}"
     
     # === Sheet 2: Role Rates ===
     ws_rates = wb.create_sheet(title="Ставки профессий")
@@ -610,14 +827,10 @@ def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
     ws_rates.column_dimensions['A'].width = 30
     ws_rates.column_dimensions['B'].width = 20
     
-    # Add all roles with their rates
+    # Add only the roles that are actually used in this WBS.
     rate_row = 2
-    all_roles_with_rates = set(all_roles) | set(DEFAULT_ROLE_RATES.keys())
-    
-    # Sort roles, but put roles that are actually used first
-    sorted_roles = sorted(all_roles_with_rates, key=lambda r: (r not in all_roles, r))
-    
-    for role in sorted_roles:
+
+    for role in all_roles:
         cell = ws_rates.cell(row=rate_row, column=1, value=role)
         cell.border = border
         
@@ -638,203 +851,12 @@ def create_wbs_excel(result_data: dict, custom_rates: dict = None) -> BytesIO:
     # Freeze header row
     ws_rates.freeze_panes = 'A2'
     
-    # === Sheet 3: Gantt Chart ===
-    ws_gantt = wb.create_sheet(title="Диаграмма Гантта")
-    
-    # Create Gantt chart data
-    gantt_data = _prepare_gantt_data(wbs_data)
-    
-    # Calculate max day for the timeline
-    max_day = max((int(item['start_day']) + int(item['duration_days']) for item in gantt_data), default=0)
-    
-    # Use weeks for timeline (each column = 1 week = 5 working days)
-    # This allows up to 1 year (52 weeks) to fit comfortably in Excel
-    DAYS_PER_WEEK = 5
-    max_week = int((max_day + DAYS_PER_WEEK - 1) // DAYS_PER_WEEK)  # Ceiling division
-    max_week = min(max_week, 52)  # Limit to 52 weeks (1 year)
-    
-    # Fixed columns: A=ID, B=Name, C=Start, D=Duration, then week columns starting from E
-    first_week_col = 5  # Column E is the first week column
-    
-    # Header row 1: Main headers
-    # ID column
-    cell = ws_gantt.cell(row=1, column=1, value="ID")
-    cell.font = header_font_white
-    cell.fill = header_fill
-    cell.alignment = Alignment(horizontal='center', vertical='center')
-    cell.border = border
-    
-    # Name column
-    cell = ws_gantt.cell(row=1, column=2, value="Название работы")
-    cell.font = header_font_white
-    cell.fill = header_fill
-    cell.alignment = Alignment(horizontal='center', vertical='center')
-    cell.border = border
-    
-    # Start week column
-    cell = ws_gantt.cell(row=1, column=3, value="Неделя")
-    cell.font = header_font_white
-    cell.fill = header_fill
-    cell.alignment = Alignment(horizontal='center', vertical='center')
-    cell.border = border
-    
-    # Duration column
-    cell = ws_gantt.cell(row=1, column=4, value="Дней")
-    cell.font = header_font_white
-    cell.fill = header_fill
-    cell.alignment = Alignment(horizontal='center', vertical='center')
-    cell.border = border
-    
-    # Week columns - each week gets its own column
-    for week in range(1, max_week + 1):
-        col = first_week_col + week - 1
-        cell = ws_gantt.cell(row=1, column=col, value=f"W{week}")
-        cell.font = header_font_white
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal='center', vertical='center')
-        cell.border = border
-    
-    # Set column widths
-    ws_gantt.column_dimensions['A'].width = 10  # ID
-    ws_gantt.column_dimensions['B'].width = 45  # Name - wider to fit task names
-    ws_gantt.column_dimensions['C'].width = 8   # Start week
-    ws_gantt.column_dimensions['D'].width = 6   # Duration
-    
-    # Week columns - narrow width
-    for week in range(1, max_week + 1):
-        col = first_week_col + week - 1
-        ws_gantt.column_dimensions[get_column_letter(col)].width = 4
-    
-    # Define parallel indicator fill (light blue for parallel tasks)
-    parallel_fill = PatternFill(start_color="9DC3E6", end_color="9DC3E6", fill_type="solid")
-    
-    # Add data rows with Gantt bars
-    row = 2
-    for item in gantt_data:
-        # Determine style based on item type
-        can_parallel = item.get('can_parallel', False)
-        
-        if item['type'] == 'phase':
-            font = phase_font
-            fill = phase_fill
-            bar_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-        elif item['type'] == 'work_package':
-            font = wp_font
-            fill = wp_fill
-            # Use different color for parallel work packages
-            if can_parallel:
-                bar_fill = PatternFill(start_color="00B050", end_color="00B050", fill_type="solid")
-            else:
-                bar_fill = PatternFill(start_color="70AD47", end_color="70AD47", fill_type="solid")
-        else:
-            font = task_font
-            fill = None
-            # Use different color for parallel tasks
-            if can_parallel:
-                bar_fill = PatternFill(start_color="FFD966", end_color="FFD966", fill_type="solid")
-            else:
-                bar_fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
-        
-        # ID column
-        cell = ws_gantt.cell(row=row, column=1, value=item['id'])
-        cell.font = font
-        cell.border = border
-        if fill:
-            cell.fill = fill
-        
-        # Name column with indentation based on level
-        indent = "  " * item['level']
-        parallel_marker = " 🔄" if can_parallel else ""
-        cell = ws_gantt.cell(row=row, column=2, value=f"{indent}{item['name']}{parallel_marker}")
-        cell.font = font
-        cell.border = border
-        cell.alignment = Alignment(wrap_text=True, vertical='center')
-        if fill:
-            cell.fill = fill
-        
-        # Start week column (1-based week number)
-        start_week = item['start_day'] // DAYS_PER_WEEK + 1
-        cell = ws_gantt.cell(row=row, column=3, value=start_week)
-        cell.font = font
-        cell.border = border
-        cell.alignment = Alignment(horizontal='center')
-        if fill:
-            cell.fill = fill
-        
-        # Duration column
-        cell = ws_gantt.cell(row=row, column=4, value=item['duration_days'])
-        cell.font = font
-        cell.border = border
-        cell.alignment = Alignment(horizontal='center')
-        if fill:
-            cell.fill = fill
-        
-        # Gantt bar - fill cells for the weeks that overlap with the task
-        # Task occupies weeks from (start_day //5 + 1) to ((start_day + duration - 1) //5 + 1)
-        task_start_week = item['start_day'] // DAYS_PER_WEEK + 1
-        task_end_week = (item['start_day'] + item['duration_days'] - 1) // DAYS_PER_WEEK + 1
-        
-        for week in range(1, max_week + 1):
-            col = first_week_col + week - 1
-            cell = ws_gantt.cell(row=row, column=col)
-            cell.border = border
-            
-            # Fill the cell if this week overlaps with the task
-            if task_start_week <= week <= task_end_week:
-                cell.fill = bar_fill
-        
-        row += 1
-    
-    # Add legend at the bottom
-    row += 2
-    cell = ws_gantt.cell(row=row, column=1, value="Легенда:")
-    cell.font = Font(bold=True)
-    
-    row += 1
-    cell = ws_gantt.cell(row=row, column=1, value="■")
-    cell.fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-    cell.border = border
-    cell = ws_gantt.cell(row=row, column=2, value="Фаза")
-    
-    row += 1
-    cell = ws_gantt.cell(row=row, column=1, value="■")
-    cell.fill = PatternFill(start_color="70AD47", end_color="70AD47", fill_type="solid")
-    cell.border = border
-    cell = ws_gantt.cell(row=row, column=2, value="Пакет работ (последовательно)")
-    
-    row += 1
-    cell = ws_gantt.cell(row=row, column=1, value="■")
-    cell.fill = PatternFill(start_color="00B050", end_color="00B050", fill_type="solid")
-    cell.border = border
-    cell = ws_gantt.cell(row=row, column=2, value="Пакет работ (параллельно) 🔄")
-    
-    row += 1
-    cell = ws_gantt.cell(row=row, column=1, value="■")
-    cell.fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
-    cell.border = border
-    cell = ws_gantt.cell(row=row, column=2, value="Задача (последовательно)")
-    
-    row += 1
-    cell = ws_gantt.cell(row=row, column=1, value="■")
-    cell.fill = PatternFill(start_color="FFD966", end_color="FFD966", fill_type="solid")
-    cell.border = border
-    cell = ws_gantt.cell(row=row, column=2, value="Задача (параллельно) 🔄")
-    
-    # Add note about weeks and parallel execution
-    row += 2
-    cell = ws_gantt.cell(row=row, column=1, value="Примечание: W = рабочая неделя (5 дней). 🔄 = может выполняться параллельно с другими задачами. Параллельные задачи начинаются одновременно.")
-    cell.font = Font(italic=True, color="666666")
-    ws_gantt.merge_cells(start_row=row, start_column=1, end_row=row, end_column=15)
-    
-    # Freeze panes: freeze first row and first 4 columns (ID, Name, Start, Duration)
-    ws_gantt.freeze_panes = 'E2'
-    
     # Save to BytesIO
     output = BytesIO()
     wb.save(output)
     output.seek(0)
     
-    logger.info(f"WBS Excel export created with {len(work_items)} work items, {len(all_roles)} roles, and Gantt chart")
+    logger.info(f"WBS Excel export created with {len(work_items)} work items and {len(all_roles)} roles")
     
     return output
 
@@ -856,120 +878,73 @@ def _prepare_gantt_data(wbs_data: dict) -> list:
     if not wbs_data or 'phases' not in wbs_data:
         return items
     
-    # Track end days for each item by ID
     item_end_days = {}
     current_day = 0
-    
+
     for phase in wbs_data.get('phases', []):
         phase_id = phase.get('id', '')
-        phase_duration = phase.get('duration', 0)
-        
-        # Try to get duration from different fields
-        if not phase_duration:
-            phase_duration = phase.get('duration_days', 0)
+        phase_duration = phase.get('duration', 0) or phase.get('duration_days', 0)
         if not phase_duration:
             hours = phase.get('estimated_hours', 0)
-            phase_duration = max(1, hours // 8)  # Convert hours to days
-        
-        # Phase starts at current day
+            phase_duration = max(1, hours // 8)
+
         phase_start = current_day
-        
-        # Track parallel work packages and their max end day
         parallel_wp_end = phase_start
         sequential_wp_start = phase_start
-        
-        # First pass: identify parallel groups and calculate start days for work packages
-        work_packages_data = []
+        phase_items = []
+
         for wp in phase.get('work_packages', []):
             wp_id = wp.get('id', '')
             wp_duration = wp.get('duration_days', 0)
             if not wp_duration:
                 hours = wp.get('estimated_hours', 0)
                 wp_duration = max(1, hours // 8)
-            
+
             wp_dependencies = wp.get('dependencies', [])
             can_parallel = wp.get('can_start_parallel', False)
-            
-            # Calculate dependency end day
+
             dep_end_day = 0
             for dep_id in wp_dependencies:
                 if dep_id in item_end_days:
                     dep_end_day = max(dep_end_day, item_end_days[dep_id])
-            
-            # Determine start day based on parallel flag and dependencies
+
             if can_parallel:
-                # Parallel tasks start at the earliest possible time
-                # If no dependencies, start at phase start
-                # If has dependencies, start after dependencies
-                if dep_end_day > 0:
-                    wp_start = dep_end_day
-                else:
-                    wp_start = phase_start
+                wp_start = dep_end_day if dep_end_day > 0 else phase_start
             else:
-                # Sequential tasks start after previous sequential task
-                # or after dependencies (whichever is later)
                 wp_start = max(sequential_wp_start, dep_end_day)
-            
-            work_packages_data.append({
-                'wp': wp,
-                'wp_id': wp_id,
-                'wp_duration': wp_duration,
-                'wp_start': wp_start,
-                'can_parallel': can_parallel,
-                'dependencies': wp_dependencies
-            })
-            
-            wp_end = wp_start + wp_duration
-            
-            # Update tracking for next sequential task
-            if not can_parallel:
-                sequential_wp_start = wp_end
-            
-            # Track max parallel end for phase duration calculation
-            parallel_wp_end = max(parallel_wp_end, wp_end)
-            
-            item_end_days[wp_id] = wp_end
-        
-        # Second pass: process tasks within each work package
-        for wp_data in work_packages_data:
-            wp = wp_data['wp']
-            wp_id = wp_data['wp_id']
-            wp_start = wp_data['wp_start']
-            wp_duration = wp_data['wp_duration']
-            can_parallel_wp = wp_data['can_parallel']
-            
-            # Track parallel tasks and their max end day within this work package
+
+            task_items = []
             parallel_task_end = wp_start
             sequential_task_start = wp_start
-            
+
             for task in wp.get('tasks', []):
                 task_id = task.get('id', '')
                 task_duration = task.get('duration_days', 0)
                 if not task_duration:
                     hours = task.get('estimated_hours', 0)
                     task_duration = max(1, hours // 8)
-                
+
                 task_dependencies = task.get('dependencies', [])
                 task_can_parallel = task.get('can_start_parallel', False)
-                
-                # Calculate dependency end day
+
                 task_dep_end = 0
                 for dep_id in task_dependencies:
                     if dep_id in item_end_days:
                         task_dep_end = max(task_dep_end, item_end_days[dep_id])
-                
-                # Determine start day based on parallel flag and dependencies
+
                 if task_can_parallel:
-                    # Parallel tasks start at the earliest possible time
-                    if task_dep_end > 0:
-                        task_start = task_dep_end
-                    else:
-                        task_start = wp_start
+                    task_start = task_dep_end if task_dep_end > 0 else wp_start
                 else:
-                    # Sequential tasks start after previous sequential task
                     task_start = max(sequential_task_start, task_dep_end)
-                
-                items.append({
+
+                task_end = task_start + task_duration
+                item_end_days[task_id] = task_end
+
+                if not task_can_parallel:
+                    sequential_task_start = task_end
+
+                parallel_task_end = max(parallel_task_end, task_end)
+                task_items.append({
                     'id': task_id,
                     'name': task.get('name', ''),
                     'type': 'task',
@@ -979,51 +954,47 @@ def _prepare_gantt_data(wbs_data: dict) -> list:
                     'dependencies': task_dependencies,
                     'can_parallel': task_can_parallel
                 })
-                
-                task_end = task_start + task_duration
-                item_end_days[task_id] = task_end
-                
-                # Update tracking for next sequential task
-                if not task_can_parallel:
-                    sequential_task_start = task_end
-                
-                parallel_task_end = max(parallel_task_end, task_end)
-            
-            # Add work package with calculated start and duration
-            items.append({
-                'id': wp_id,
-                'name': wp.get('name', ''),
-                'type': 'work_package',
-                'level': 1,
-                'start_day': wp_start,
-                'duration_days': wp_duration,
-                'dependencies': wp_data['dependencies'],
-                'can_parallel': can_parallel_wp
+
+            wp_end = max(wp_start + wp_duration, parallel_task_end)
+            item_end_days[wp_id] = wp_end
+
+            if not can_parallel:
+                sequential_wp_start = wp_end
+
+            parallel_wp_end = max(parallel_wp_end, wp_end)
+            phase_items.append({
+                'work_package': {
+                    'id': wp_id,
+                    'name': wp.get('name', ''),
+                    'type': 'work_package',
+                    'level': 1,
+                    'start_day': wp_start,
+                    'duration_days': max(1, wp_end - wp_start),
+                    'dependencies': wp_dependencies,
+                    'can_parallel': can_parallel
+                },
+                'tasks': task_items
             })
-        
-        # Calculate actual phase duration based on work packages
-        actual_phase_end = parallel_wp_end
-        phase_duration = actual_phase_end - phase_start
-        
-        # Add phase
+
+        actual_phase_end = parallel_wp_end if phase.get('work_packages') else phase_start + phase_duration
+        item_end_days[phase_id] = actual_phase_end
+        current_day = actual_phase_end
+
         items.append({
             'id': phase_id,
             'name': phase.get('name', ''),
             'type': 'phase',
             'level': 0,
             'start_day': phase_start,
-            'duration_days': phase_duration,
+            'duration_days': max(1, actual_phase_end - phase_start),
             'dependencies': [],
             'can_parallel': False
         })
-        
-        item_end_days[phase_id] = actual_phase_end
-        current_day = actual_phase_end
-    
-    # Sort items: by start day, then by type (phases first, then work packages, then tasks)
-    type_order = {'phase': 0, 'work_package': 1, 'task': 2}
-    items.sort(key=lambda x: (x['start_day'], type_order.get(x['type'], 3), x['id']))
-    
+
+        for wp_entry in phase_items:
+            items.append(wp_entry['work_package'])
+            items.extend(wp_entry['tasks'])
+
     return items
 
 

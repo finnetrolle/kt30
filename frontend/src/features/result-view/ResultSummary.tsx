@@ -217,6 +217,138 @@ function RecommendationList({ items }: { items: RecommendationItem[] }) {
   );
 }
 
+function ExecutionTraceSection({ payload }: { payload: ResultPayload }) {
+  const trace = payload.execution_trace;
+
+  if (!trace?.available) {
+    return null;
+  }
+
+  const stages = trace.stages ?? [];
+  const uncategorizedCalls = trace.uncategorized_calls ?? [];
+  const recentEvents = trace.recent_events ?? [];
+
+  return (
+    <Card className="border-border/70 bg-card/85">
+      <CardHeader>
+        <CardTitle className="text-2xl">Журнал запуска</CardTitle>
+        <CardDescription>
+          Здесь собраны этапы пайплайна, токены и краткие описания LLM-запросов без полного текста промптов.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3">
+          <MetricTile label="LLM-вызовы" value={trace.llm_call_count.toLocaleString("ru-RU")} />
+          <MetricTile label="Ошибки вызовов" value={trace.error_count.toLocaleString("ru-RU")} />
+          <MetricTile label="События прогресса" value={trace.progress_event_count.toLocaleString("ru-RU")} />
+        </div>
+
+        {stages.length ? (
+          <div className="grid gap-3">
+            {stages.map((stage) => (
+              <details
+                key={stage.stage_id}
+                className="rounded-xl border border-border/70 bg-background/55 p-4 shadow-sm"
+                open={stage.stage_id === stages[0]?.stage_id}
+              >
+                <summary className="flex cursor-pointer list-none flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="space-y-2">
+                    <strong className="text-sm">
+                      Этап {stage.stage_id}. {translateText(stage.message)}
+                    </strong>
+                    <p className="text-xs text-muted-foreground">
+                      Запросы: {(stage.request_count ?? 0).toLocaleString("ru-RU")} | LLM-вызовы:{" "}
+                      {(stage.llm_calls?.length ?? 0).toLocaleString("ru-RU")}
+                    </p>
+                  </div>
+                  <Badge variant="warning">
+                    {(stage.usage.total_tokens ?? 0).toLocaleString("ru-RU")} ток.
+                  </Badge>
+                </summary>
+                <div className="mt-4 space-y-3">
+                  <p className="text-xs text-muted-foreground">
+                    Промпт: {(stage.usage.prompt_tokens ?? 0).toLocaleString("ru-RU")} | Ответ:{" "}
+                    {(stage.usage.completion_tokens ?? 0).toLocaleString("ru-RU")}
+                  </p>
+                  {stage.llm_calls?.length ? (
+                    <div className="grid gap-3">
+                      {stage.llm_calls.map((call) => (
+                        <Surface key={`${stage.stage_id}-${call.index}`}>
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="space-y-1">
+                              <strong className="text-sm">
+                                {call.agent}: {call.description}
+                              </strong>
+                              <p className="text-xs text-muted-foreground">
+                                Статус: {translateValue(call.status)} | Попытка: {call.attempt.toLocaleString("ru-RU")}
+                                {call.model ? ` | Модель: ${call.model}` : ""}
+                                {typeof call.elapsed_seconds === "number" ? ` | ${call.elapsed_seconds.toLocaleString("ru-RU")} с` : ""}
+                              </p>
+                            </div>
+                            <Badge variant={call.status === "error" ? "destructive" : "outline"}>
+                              {(call.usage.total_tokens ?? 0).toLocaleString("ru-RU")} ток.
+                            </Badge>
+                          </div>
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            Промпт: {(call.usage.prompt_tokens ?? 0).toLocaleString("ru-RU")} | Ответ:{" "}
+                            {(call.usage.completion_tokens ?? 0).toLocaleString("ru-RU")}
+                          </p>
+                          {call.error ? (
+                            <p className="mt-2 text-xs text-destructive-foreground">{translateText(call.error, call.error)}</p>
+                          ) : null}
+                        </Surface>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">Для этого этапа не зафиксированы отдельные LLM-вызовы.</p>
+                  )}
+                </div>
+              </details>
+            ))}
+          </div>
+        ) : null}
+
+        {uncategorizedCalls.length ? (
+          <details className="rounded-xl border border-border/70 bg-background/55 p-4 shadow-sm">
+            <summary className="cursor-pointer list-none text-sm font-semibold">LLM-вызовы вне этапов</summary>
+            <div className="mt-4 grid gap-3">
+              {uncategorizedCalls.map((call) => (
+                <Surface key={`uncategorized-${call.index}`}>
+                  <strong className="text-sm">
+                    {call.agent}: {call.description}
+                  </strong>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {(call.usage.total_tokens ?? 0).toLocaleString("ru-RU")} ток. | Попытка: {call.attempt.toLocaleString("ru-RU")}
+                  </p>
+                </Surface>
+              ))}
+            </div>
+          </details>
+        ) : null}
+
+        {recentEvents.length ? (
+          <details className="rounded-xl border border-border/70 bg-background/55 p-4 shadow-sm">
+            <summary className="cursor-pointer list-none text-sm font-semibold">Последние события сервиса</summary>
+            <div className="mt-4 grid gap-3">
+              {recentEvents.map((event, index) => (
+                <Surface key={`${event.type ?? "event"}-${event.timestamp ?? index}`}>
+                  <strong className="text-sm">{translateText(event.message ?? "Событие")}</strong>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {(event.type ?? "info").toString()} |{" "}
+                    {typeof event.timestamp === "number"
+                      ? new Date(event.timestamp * 1000).toLocaleTimeString("ru-RU")
+                      : "н/д"}
+                  </p>
+                </Surface>
+              ))}
+            </div>
+          </details>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ResultSummary({ payload }: { payload: ResultPayload }) {
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [pdfExportError, setPdfExportError] = useState<string | null>(null);
@@ -347,6 +479,8 @@ export function ResultSummary({ payload }: { payload: ResultPayload }) {
           )}
         </CardContent>
       </Card>
+
+      <ExecutionTraceSection payload={payload} />
 
       <Card className="border-border/70 bg-card/85">
         <CardHeader>

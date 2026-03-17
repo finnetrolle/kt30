@@ -51,4 +51,50 @@ describe("TaskProgressPanel", () => {
     expect(screen.getByText(/запросы: 3/i)).toBeInTheDocument();
     expect(screen.getAllByText("Анализируем зависимости")).toHaveLength(3);
   });
+
+  it("shows detailed event metadata for llm activity", () => {
+    render(
+      <TaskProgressPanel
+        taskId="task-456"
+        stage="Запуск мульти-агентного анализа"
+        events={[
+          {
+            type: "agent",
+            message: "📤 planner: запрос отправлен в gpt-test",
+            timestamp: 1710000100,
+            data: {
+              agent: "planner",
+              model: "gpt-test",
+              worker_id: "worker-1",
+              attempt: 2,
+              elapsed_seconds: 4.2,
+              request_id: "req-1",
+              prompt_preview: "Построй каркас WBS по компактному анализу проекта",
+              usage: {
+                prompt_tokens: 120,
+                completion_tokens: 48,
+                total_tokens: 168
+              }
+            }
+          }
+        ]}
+        totalTokens={168}
+        requestCount={1}
+        elapsedSeconds={8}
+        stageUsage={[]}
+        jobStatus="running"
+        isStreaming={false}
+        error={null}
+        onCancel={vi.fn()}
+        isCanceling={false}
+      />
+    );
+
+    expect(screen.getByText(/агент: планировщик/i)).toBeInTheDocument();
+    expect(screen.getByText(/модель: gpt-test/i)).toBeInTheDocument();
+    expect(screen.getByText(/воркер: worker-1/i)).toBeInTheDocument();
+    expect(screen.getByText(/токены: 168 \(prompt 120, completion 48\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/prompt preview/i)).toBeInTheDocument();
+    expect(screen.getByText(/request id: req-1/i)).toBeInTheDocument();
+  });
 });

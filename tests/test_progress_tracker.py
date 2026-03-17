@@ -66,6 +66,36 @@ class ProgressTrackerPersistenceTests(unittest.TestCase):
             self.assertTrue(task_dir.exists())
             self.assertTrue((task_dir / ProgressTracker.EVENTS_FILENAME).exists())
 
+    def test_llm_request_and_response_events_include_previews(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            task_dir = Path(temp_dir) / "task-llm"
+            tracker = ProgressTracker("task-llm", storage_dir=task_dir)
+
+            tracker.llm_request(
+                "planner",
+                "gpt-test",
+                "Сформируй подробный план проекта " * 20,
+                system_prompt="Ты старший планировщик ИСР",
+                data={"attempt": 1}
+            )
+            tracker.llm_response(
+                "planner",
+                "gpt-test",
+                "Готово, сформировал каркас WBS " * 20,
+                elapsed_seconds=4.25,
+                usage={"prompt_tokens": 123, "completion_tokens": 45},
+                data={"attempt": 1}
+            )
+
+            mirror = ProgressTracker.from_existing("task-llm", task_dir)
+            events, _ = mirror.read_events_since(0)
+
+            self.assertEqual([event["type"] for event in events], ["agent", "agent"])
+            self.assertEqual(events[0]["data"]["llm_event"], "request_started")
+            self.assertEqual(events[1]["data"]["llm_event"], "response_received")
+            self.assertLessEqual(len(events[0]["data"]["prompt_preview"]), 480)
+            self.assertEqual(events[1]["data"]["usage"]["total_tokens"], 168)
+
     def test_cleanup_skips_unfinished_trackers_even_if_they_are_old(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = ProgressTrackerStore(storage_root=temp_dir, ttl_seconds=60)

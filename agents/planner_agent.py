@@ -149,6 +149,7 @@ class PlannerAgent(BaseAgent):
 Правила:
 - 2-5 коротких задач
 - estimated_hours число
+- у каждой задачи обязательно должен быть requirement_ids
 - depends_on только внутри пакета
 - без лишнего текста
 {template_reference}"""
@@ -162,6 +163,7 @@ class PlannerAgent(BaseAgent):
     {{
       "name": "Название задачи",
       "description": "Краткое описание",
+      "requirement_ids": ["FR-1"],
       "estimated_hours": 8,
       "skills_required": ["Backend Developer"],
       "depends_on": [],
@@ -174,6 +176,7 @@ class PlannerAgent(BaseAgent):
 
 Правила:
 - Сгенерируй 2-6 атомарных задач.
+- Каждая задача ОБЯЗАНА содержать requirement_ids и ссылаться только на requirement_ids пакета работ.
 - estimated_hours должен быть числом в диапазоне 2-80.
 - depends_on может ссылаться только на названия задач из того же пакета.
 - can_start_parallel=true только если задача реально независима.
@@ -260,6 +263,86 @@ class PlannerAgent(BaseAgent):
                 seen.add(skill)
         return unique
 
+    def _collect_requirement_ids(self, analysis: Dict[str, Any], include_non_functional: bool = True) -> List[str]:
+        """Collect known requirement ids from analysis."""
+        requirement_ids: List[str] = []
+        collections = ["functional_requirements"]
+        if include_non_functional:
+            collections.append("non_functional_requirements")
+
+        for collection_name in collections:
+            for requirement in analysis.get(collection_name, []) or []:
+                requirement_id = self._normalize_space(requirement.get("id"))
+                if requirement_id and requirement_id not in requirement_ids:
+                    requirement_ids.append(requirement_id)
+
+        return requirement_ids
+
+    def _fallback_requirement_ids_for_phase(self, analysis: Dict[str, Any], phase_name: str, limit: int = 5) -> List[str]:
+        """Pick a reasonable non-empty fallback set of requirements for a phase."""
+        fallback_ids: List[str] = []
+        normalized_phase_name = self._normalize_space(phase_name)
+
+        for requirement in analysis.get("functional_requirements", []) or []:
+            requirement_id = self._normalize_space(requirement.get("id"))
+            if not requirement_id:
+                continue
+            if self._guess_phase_for_requirement(requirement) == normalized_phase_name and requirement_id not in fallback_ids:
+                fallback_ids.append(requirement_id)
+            if len(fallback_ids) >= limit:
+                return fallback_ids
+
+        if normalized_phase_name in {"Тестирование", "Развертывание", "Планирование и анализ"}:
+            for requirement in analysis.get("non_functional_requirements", []) or []:
+                requirement_id = self._normalize_space(requirement.get("id"))
+                if requirement_id and requirement_id not in fallback_ids:
+                    fallback_ids.append(requirement_id)
+                if len(fallback_ids) >= limit:
+                    return fallback_ids
+
+        for requirement_id in self._collect_requirement_ids(analysis, include_non_functional=True):
+            if requirement_id not in fallback_ids:
+                fallback_ids.append(requirement_id)
+            if len(fallback_ids) >= limit:
+                break
+
+        return fallback_ids
+
+    def _sanitize_requirement_ids(
+        self,
+        requirement_ids: Any,
+        allowed_ids: List[str],
+        fallback_ids: List[str],
+        limit: int = 5
+    ) -> List[str]:
+        """Normalize requirement ids, keeping only allowed values and ensuring non-empty output."""
+        allowed = {self._normalize_space(req_id) for req_id in allowed_ids if self._normalize_space(req_id)}
+        result: List[str] = []
+
+        for req_id in requirement_ids or []:
+            normalized = self._normalize_space(req_id)
+            if not normalized:
+                continue
+            if allowed and normalized not in allowed:
+                continue
+            if normalized not in result:
+                result.append(normalized)
+            if len(result) >= limit:
+                return result
+
+        for req_id in fallback_ids or []:
+            normalized = self._normalize_space(req_id)
+            if not normalized:
+                continue
+            if allowed and normalized not in allowed:
+                continue
+            if normalized not in result:
+                result.append(normalized)
+            if len(result) >= limit:
+                break
+
+        return result
+
     def _build_fallback_skeleton(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Build a deterministic skeleton if the LLM skeleton call fails."""
         requirements = analysis.get("functional_requirements", [])
@@ -321,10 +404,11 @@ class PlannerAgent(BaseAgent):
                     "skills_required": ["QA Engineer", "Backend Developer"]
                 })
             else:
+                release_requirement_ids = self._fallback_requirement_ids_for_phase(analysis, phase_name, limit=5)
                 work_packages.append({
                     "name": "Подготовка релиза и ввод в эксплуатацию",
                     "description": "Сборка, настройка окружений, публикация и передача результатов.",
-                    "requirement_ids": [],
+                    "requirement_ids": release_requirement_ids,
                     "dependencies": ["Функциональное и интеграционное тестирование"],
                     "can_start_parallel": False,
                     "deliverables": ["Релиз в целевом окружении", "Эксплуатационная документация"],
@@ -353,6 +437,7 @@ class PlannerAgent(BaseAgent):
 
     def _normalize_phase_plan(self, skeleton: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[str, Any]:
         """Ensure the skeleton has all standard phases and covered requirements."""
+        all_requirement_ids = self._collect_requirement_ids(analysis, include_non_functional=True)
         phases_by_name = {
             self._normalize_space(phase.get("name")): phase
             for phase in skeleton.get("phase_plan", [])
@@ -372,12 +457,18 @@ class PlannerAgent(BaseAgent):
                 name = self._normalize_space(wp.get("name"))
                 if not name:
                     continue
+                fallback_requirement_ids = self._fallback_requirement_ids_for_phase(
+                    analysis, phase_name, limit=5
+                )
                 work_packages.append({
                     "name": name,
                     "description": self._normalize_space(wp.get("description")) or name,
-                    "requirement_ids": [
-                        req_id for req_id in wp.get("requirement_ids", []) if req_id
-                    ],
+                    "requirement_ids": self._sanitize_requirement_ids(
+                        wp.get("requirement_ids", []),
+                        all_requirement_ids,
+                        fallback_requirement_ids,
+                        limit=5
+                    ),
                     "dependencies": self._dedupe_strings(wp.get("dependencies", [])),
                     "can_start_parallel": bool(wp.get("can_start_parallel", False)),
                     "deliverables": self._dedupe_strings(wp.get("deliverables", [])),
@@ -531,6 +622,7 @@ class PlannerAgent(BaseAgent):
             "work_package": {
                 "name": work_package.get("name", ""),
                 "description": work_package.get("description", ""),
+                "requirement_ids": work_package.get("requirement_ids", []),
                 "dependencies": work_package.get("dependencies", []),
                 "deliverables": work_package.get("deliverables", []),
                 "skills_required": work_package.get("skills_required", [])
@@ -543,6 +635,8 @@ class PlannerAgent(BaseAgent):
         return (
             "Детализируй пакет работ в набор задач.\n\n"
             f"Контекст:\n{json.dumps(compact_context, ensure_ascii=False, indent=2)}\n\n"
+            "Важно: каждая задача должна содержать requirement_ids, "
+            "и эти requirement_ids должны быть непустым подмножеством requirement_ids пакета работ.\n\n"
             "JSON:"
         )
 
@@ -563,10 +657,18 @@ class PlannerAgent(BaseAgent):
         work_package: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Generate tasks for a single work package."""
-        if not self._should_use_llm_for_work_package(phase, work_package):
+        prepared_work_package = copy.deepcopy(work_package)
+        prepared_work_package["requirement_ids"] = self._sanitize_requirement_ids(
+            prepared_work_package.get("requirement_ids", []),
+            self._collect_requirement_ids(analysis, include_non_functional=True),
+            self._fallback_requirement_ids_for_phase(analysis, phase.get("name", ""), limit=5),
+            limit=5
+        )
+
+        if not self._should_use_llm_for_work_package(phase, prepared_work_package):
             return {
                 "success": True,
-                "data": self._fallback_tasks_for_work_package(phase, work_package),
+                "data": self._fallback_tasks_for_work_package(phase, prepared_work_package),
                 "metadata": {
                     "used_fallback_tasks": True,
                     "reason": "small_llm_policy"
@@ -575,16 +677,16 @@ class PlannerAgent(BaseAgent):
 
         context_text = " ".join([
             phase.get("name", ""),
-            work_package.get("name", ""),
-            work_package.get("description", ""),
-            " ".join(work_package.get("deliverables", []))
+            prepared_work_package.get("name", ""),
+            prepared_work_package.get("description", ""),
+            " ".join(prepared_work_package.get("deliverables", []))
         ])
         template_reference = self._select_relevant_templates(context_text)
         worker = PlannerAgent()
         if self._progress_tracker:
             worker.set_progress_tracker(self._progress_tracker, stream_events=False)
         result = worker.send_message(
-            worker._build_tasks_message(analysis, phase, work_package),
+            worker._build_tasks_message(analysis, phase, prepared_work_package),
             expect_json=True,
             use_history=False,
             max_tokens=Config.WBS_TASKS_MAX_TOKENS,
@@ -598,11 +700,13 @@ class PlannerAgent(BaseAgent):
         skills = work_package.get("skills_required") or self._guess_skills(
             " ".join([phase.get("name", ""), work_package.get("name", ""), work_package.get("description", "")])
         )
+        requirement_ids = self._dedupe_strings(work_package.get("requirement_ids", []))
         return {
             "tasks": [
                 {
                     "name": "Подготовка пакета работ",
                     "description": "Уточнение входных данных, ограничений и подхода к реализации.",
+                    "requirement_ids": requirement_ids,
                     "estimated_hours": 4,
                     "skills_required": skills,
                     "depends_on": [],
@@ -611,6 +715,7 @@ class PlannerAgent(BaseAgent):
                 {
                     "name": "Реализация основного объема работ",
                     "description": "Выполнение ключевых работ по пакету.",
+                    "requirement_ids": requirement_ids,
                     "estimated_hours": 12,
                     "skills_required": skills,
                     "depends_on": ["Подготовка пакета работ"],
@@ -619,6 +724,7 @@ class PlannerAgent(BaseAgent):
                 {
                     "name": "Проверка и фиксация результата",
                     "description": "Самопроверка, доработка и передача результата.",
+                    "requirement_ids": requirement_ids,
                     "estimated_hours": 4,
                     "skills_required": skills,
                     "depends_on": ["Реализация основного объема работ"],
@@ -671,6 +777,11 @@ class PlannerAgent(BaseAgent):
 
                 task_name_to_id = {}
                 assembled_tasks = []
+                wp_requirement_ids = self._dedupe_strings(wp.get("requirement_ids", []))
+                if not wp_requirement_ids:
+                    wp_requirement_ids = self._fallback_requirement_ids_for_phase(
+                        analysis, phase.get("name", ""), limit=5
+                    )
                 for task_index, task in enumerate(tasks_raw, start=1):
                     task_id = f"{wp_id}.{task_index}"
                     name = self._normalize_space(task.get("name")) or f"Задача {task_index}"
@@ -682,6 +793,12 @@ class PlannerAgent(BaseAgent):
                         "estimated_hours": task_hours,
                         "duration_days": math.ceil(task_hours / 8),
                         "status": "pending",
+                        "requirement_ids": self._sanitize_requirement_ids(
+                            task.get("requirement_ids", []),
+                            wp_requirement_ids,
+                            wp_requirement_ids,
+                            limit=5
+                        ),
                         "skills_required": self._dedupe_strings(
                             task.get("skills_required", []) or task_bundle.get("skills_required", []) or wp.get("skills_required", [])
                         ),
@@ -704,6 +821,7 @@ class PlannerAgent(BaseAgent):
                     "id": wp_id,
                     "name": wp.get("name", f"Пакет {wp_id}"),
                     "description": wp.get("description", ""),
+                    "requirement_ids": wp_requirement_ids,
                     "estimated_hours": wp_hours,
                     "duration_days": math.ceil(wp_hours / 8),
                     "dependencies": [],
@@ -915,6 +1033,7 @@ class PlannerAgent(BaseAgent):
                         "id": wp.get("id", ""),
                         "name": wp.get("name", ""),
                         "description": wp.get("description", ""),
+                        "requirement_ids": wp.get("requirement_ids", []),
                         "estimated_hours": wp.get("estimated_hours", 0),
                         "dependencies": wp.get("dependencies", []),
                         "deliverables": wp.get("deliverables", []),
@@ -925,6 +1044,7 @@ class PlannerAgent(BaseAgent):
                                 "id": task.get("id", ""),
                                 "name": task.get("name", ""),
                                 "description": task.get("description", ""),
+                                "requirement_ids": task.get("requirement_ids", []),
                                 "estimated_hours": task.get("estimated_hours", 0),
                                 "skills_required": task.get("skills_required", []),
                                 "dependencies": task.get("dependencies", []),
@@ -977,6 +1097,7 @@ class PlannerAgent(BaseAgent):
             "estimated_hours": 8,
             "duration_days": 1,
             "status": "pending",
+            "requirement_ids": self._dedupe_strings(current_wp.get("requirement_ids", [])),
             "skills_required": self._guess_skills(
                 " ".join([current_wp.get("name", ""), refined_task.get("name", ""), refined_task.get("description", "")])
             ),
@@ -1001,6 +1122,13 @@ class PlannerAgent(BaseAgent):
             merged["estimated_hours"] = max(2, min(80, self._coerce_hours(refined_task.get("estimated_hours", 8))))
         else:
             merged["estimated_hours"] = max(2, min(80, self._coerce_hours(merged.get("estimated_hours", 8))))
+
+        merged["requirement_ids"] = self._sanitize_requirement_ids(
+            refined_task.get("requirement_ids", merged.get("requirement_ids", [])),
+            current_wp.get("requirement_ids", []),
+            current_wp.get("requirement_ids", []),
+            limit=5
+        )
 
         if "skills_required" in refined_task:
             merged["skills_required"] = self._dedupe_strings(
@@ -1035,6 +1163,7 @@ class PlannerAgent(BaseAgent):
             "id": refined_wp.get("id", f"{current_phase.get('id', '')}.{wp_index}"),
             "name": self._normalize_space(refined_wp.get("name")) or f"Пакет {wp_index}",
             "description": "",
+            "requirement_ids": [],
             "estimated_hours": 0,
             "duration_days": 1,
             "dependencies": [],
@@ -1058,6 +1187,10 @@ class PlannerAgent(BaseAgent):
             merged["description"] = description
         elif not merged.get("description"):
             merged["description"] = merged.get("name", "")
+
+        merged["requirement_ids"] = self._dedupe_strings(
+            refined_wp.get("requirement_ids", []) or merged.get("requirement_ids", [])
+        )
 
         if "dependencies" in refined_wp:
             merged["dependencies"] = self._dedupe_strings(refined_wp.get("dependencies", []))
@@ -1098,6 +1231,13 @@ class PlannerAgent(BaseAgent):
 
         if not merged.get("tasks"):
             merged["tasks"] = self._fallback_tasks_for_work_package(current_phase, merged).get("tasks", [])
+
+        if not merged.get("requirement_ids"):
+            for task in merged.get("tasks", []):
+                for requirement_id in task.get("requirement_ids", []):
+                    requirement_id = self._normalize_space(requirement_id)
+                    if requirement_id and requirement_id not in merged["requirement_ids"]:
+                        merged["requirement_ids"].append(requirement_id)
 
         if "estimated_hours" in refined_wp:
             merged["estimated_hours"] = max(2, self._coerce_hours(refined_wp.get("estimated_hours", 0), default=0))
@@ -1260,8 +1400,20 @@ class PlannerAgent(BaseAgent):
                     issues.append(f"Phase {phase.get('id')} has no work packages")
                 else:
                     for wp in phase["work_packages"]:
+                        wp_requirement_ids = self._dedupe_strings(wp.get("requirement_ids", []))
+                        if not wp_requirement_ids:
+                            issues.append(f"Work package {wp.get('id')} has no requirement_ids")
                         if not wp.get("tasks"):
                             issues.append(f"Work package {wp.get('id')} has no tasks")
+                            continue
+                        for task in wp["tasks"]:
+                            task_requirement_ids = self._dedupe_strings(task.get("requirement_ids", []))
+                            if not task_requirement_ids:
+                                issues.append(f"Task {task.get('id')} has no requirement_ids")
+                            elif wp_requirement_ids and not set(task_requirement_ids).issubset(set(wp_requirement_ids)):
+                                issues.append(
+                                    f"Task {task.get('id')} references requirements outside work package {wp.get('id')}"
+                                )
 
         validation_result = {
             "valid": len(issues) == 0,

@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import type { ResultHistoryList, ResultPayload } from "@/entities/result/model";
-import type { ActiveTaskList, TaskStatus } from "@/entities/task/model";
+import type { ActiveTaskList, TaskProgressSnapshot, TaskStatus } from "@/entities/task/model";
 
 const sessionSchema = z.object({
   auth_enabled: z.boolean(),
@@ -40,6 +40,50 @@ const taskStatusSchema = z.object({
   started_at: z.number().nullable().optional(),
   finished_at: z.number().nullable().optional(),
   payload: z.record(z.unknown()).optional()
+});
+
+const taskEventSchema = z.object({
+  type: z.string(),
+  message: z.string(),
+  timestamp: z.number(),
+  data: z.record(z.unknown()).default({})
+});
+
+const taskStageUsageSchema = z.object({
+  stage_id: z.number(),
+  message: z.string(),
+  usage: z.object({
+    total_tokens: z.number().optional().default(0),
+    prompt_tokens: z.number().optional().default(0),
+    completion_tokens: z.number().optional().default(0)
+  }),
+  request_count: z.number().default(0)
+});
+
+const taskProgressSnapshotSchema = z.object({
+  task_id: z.string(),
+  status: z.string().nullable().optional(),
+  current_stage: z.string().nullable().optional(),
+  current_stage_id: z.number().nullable().optional(),
+  request_count: z.number().default(0),
+  overall_usage: z.object({
+    total_tokens: z.number().default(0),
+    prompt_tokens: z.number().default(0),
+    completion_tokens: z.number().default(0)
+  }),
+  stage_usage: z.array(taskStageUsageSchema).default([]),
+  events: z.array(taskEventSchema).default([]),
+  completed: z.boolean().default(false),
+  error: z.boolean().default(false),
+  artifacts_dir: z.string().nullable().optional(),
+  worker_available: z.boolean().default(true),
+  worker_health: z
+    .object({
+      healthy_workers: z.number().optional(),
+      known_workers: z.number().optional()
+    })
+    .nullable()
+    .optional()
 });
 
 const activeTaskSchema = z.object({
@@ -225,6 +269,12 @@ export async function cancelTask(taskId: string) {
 export async function getTask(taskId: string) {
   const payload = await apiFetch(`/api/tasks/${taskId}`);
   return taskStatusSchema.parse(payload) as TaskStatus;
+}
+
+export async function getTaskProgressSnapshot(taskId: string, options?: { compact?: boolean }) {
+  const suffix = options?.compact ? "?compact=1" : "";
+  const payload = await apiFetch(`/api/tasks/${taskId}/progress${suffix}`);
+  return taskProgressSnapshotSchema.parse(payload) as TaskProgressSnapshot;
 }
 
 export async function getActiveTasks() {

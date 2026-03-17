@@ -6,6 +6,7 @@ import hmac
 import os
 import json
 import logging
+import re
 import secrets
 import time
 import uuid
@@ -223,6 +224,10 @@ def create_app(config_class=Config):
         project_info['calculated_duration_days'] = duration_info['total_days']
         project_info['calculated_duration_weeks'] = duration_info['total_weeks']
         result['dependencies_matrix'] = dependencies_matrix
+        view_model['execution_trace'] = _build_execution_trace(
+            view_model.get('artifacts_dir'),
+            view_model.get('token_usage')
+        )
 
         view_model['result_id'] = result_id
         view_model['calculated_duration'] = duration_info
@@ -294,6 +299,310 @@ def create_app(config_class=Config):
             view_model['payload'] = payload
 
         return view_model
+
+    def _coerce_artifacts_dir(artifacts_dir: str | None) -> Path | None:
+        """Return a safe artifact directory path only when it exists."""
+        if not artifacts_dir:
+            return None
+
+        try:
+            candidate = Path(artifacts_dir)
+            if candidate.is_dir():
+                return candidate
+        except (OSError, TypeError, ValueError):
+            return None
+
+        return None
+
+    def _read_artifact_jsonl(artifacts_dir: str | None, filename: str, limit: int | None = None) -> list[dict]:
+        """Read JSONL records from a run artifact file."""
+        base_dir = _coerce_artifacts_dir(artifacts_dir)
+        if not base_dir:
+            return []
+
+        path = base_dir / filename
+        if not path.exists():
+            return []
+
+        records = []
+        try:
+            with open(path, 'r', encoding='utf-8') as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        except OSError as exc:
+            logger.warning("Failed to read artifact log %s: %s", path, exc)
+            return []
+
+        if limit is not None and len(records) > limit:
+            return records[-limit:]
+        return records
+
+    def _extract_message_text(message: object) -> str:
+        """Extract human-readable text from a Chat Completions message payload."""
+        if isinstance(message, str):
+            return message
+
+        if isinstance(message, list):
+            parts = []
+            for item in message:
+                if isinstance(item, dict):
+                    if isinstance(item.get('text'), str):
+                        parts.append(item['text'])
+                    elif item.get('type') == 'text' and isinstance(item.get('content'), str):
+                        parts.append(item['content'])
+            return "\n".join(parts)
+
+        return ""
+
+    def _truncate_text(value: str, limit: int = 160) -> str:
+        """Normalize and truncate free text for UI-safe summaries."""
+        cleaned = " ".join(str(value or "").strip().split())
+        return cleaned if len(cleaned) <= limit else cleaned[: limit - 1].rstrip() + "…"
+
+    def _extract_named_context(prompt_text: str, block_name: str) -> str | None:
+        """Best-effort extract a named object from embedded JSON context."""
+        pattern = rf'"{re.escape(block_name)}"\s*:\s*\{{.*?"name"\s*:\s*"([^"]+)"'
+        match = re.search(pattern, prompt_text, flags=re.DOTALL)
+        if match:
+            return _truncate_text(match.group(1), 100)
+        return None
+
+    def _summarize_llm_prompt(agent_name: str, prompt_text: str) -> str:
+        """Convert a raw prompt into a short description of the request purpose."""
+        text = str(prompt_text or "").replace("\r", "\n")
+        if not text.strip():
+            return f"{agent_name}: LLM-вызов"
+
+        if "Детализируй пакет работ" in text:
+            package_name = _extract_named_context(text, "work_package")
+            return (
+                f"Детализация пакета работ «{package_name}» в задачи"
+                if package_name
+                else "Детализация пакета работ в задачи"
+            )
+
+        if "phase_plan" in text or "каркас WBS" in text or "стандартные фазы" in text:
+            return "Формирование каркаса WBS по фазам и пакетам работ"
+
+        if "validate" in agent_name.lower() or "валидатор" in agent_name.lower():
+            return "Проверка структуры, оценок и связности WBS"
+
+        if "analyst" in agent_name.lower() or "аналит" in agent_name.lower():
+            return "Извлечение требований, рисков и ограничений из документа"
+
+        if "planner" in agent_name.lower() or "планиров" in agent_name.lower():
+            return "Построение и уточнение структуры WBS"
+
+        if "stabilizer" in agent_name.lower() or "стабилиз" in agent_name.lower():
+            return "Стабилизация и согласование финального варианта WBS"
+
+        cut_markers = ("\n\nКонтекст:", "\nКонтекст:", "\n\nТехническое задание:", "\nТехническое задание:", "\n\nJSON:")
+        for marker in cut_markers:
+            if marker in text:
+                text = text.split(marker, 1)[0]
+                break
+
+        for line in text.splitlines():
+            cleaned = _truncate_text(line, 140)
+            if cleaned and not cleaned.startswith(("{", "[", "\"")):
+                return cleaned
+
+        return f"{agent_name}: LLM-вызов"
+
+    def _summarize_llm_call(raw_call: dict, index: int) -> dict:
+        """Return a compact LLM call summary safe for the UI."""
+        agent_name = str(raw_call.get('agent') or 'LLM')
+        prompt_text = ""
+        for message in reversed(raw_call.get('messages', []) if isinstance(raw_call.get('messages'), list) else []):
+            if isinstance(message, dict) and message.get('role') == 'user':
+                prompt_text = _extract_message_text(message.get('content'))
+                if prompt_text:
+                    break
+
+        usage = raw_call.get('usage') if isinstance(raw_call.get('usage'), dict) else {}
+        summary = {
+            'index': index,
+            'agent': agent_name,
+            'description': _summarize_llm_prompt(agent_name, prompt_text),
+            'status': raw_call.get('status') or 'unknown',
+            'attempt': int(raw_call.get('attempt', 1) or 1),
+            'model': raw_call.get('model'),
+            'elapsed_seconds': raw_call.get('elapsed_seconds'),
+            'usage': {
+                'prompt_tokens': int(usage.get('prompt_tokens', 0) or 0),
+                'completion_tokens': int(usage.get('completion_tokens', 0) or 0),
+                'total_tokens': int(usage.get('total_tokens', 0) or 0)
+            },
+            'stage_id': raw_call.get('stage_id'),
+            'stage_message': raw_call.get('stage_message'),
+            'error': _truncate_text(str(raw_call.get('error', '') or ''), 180) if raw_call.get('error') else None,
+            'error_type': raw_call.get('error_type')
+        }
+        return summary
+
+    def _build_execution_trace(artifacts_dir: str | None, token_usage: dict | None) -> dict:
+        """Build a compact, UI-friendly execution trace from run artifacts."""
+        llm_calls_raw = _read_artifact_jsonl(artifacts_dir, 'llm_calls.ndjson')
+        progress_events = _read_artifact_jsonl(artifacts_dir, 'progress_events.ndjson', limit=120)
+        token_usage = token_usage if isinstance(token_usage, dict) else {}
+        stage_entries = token_usage.get('stages', []) if isinstance(token_usage.get('stages'), list) else []
+        stage_map: dict[int, dict] = {}
+
+        for stage in stage_entries:
+            if not isinstance(stage, dict):
+                continue
+            stage_id = int(stage.get('stage_id', 0) or 0)
+            if stage_id <= 0:
+                continue
+            usage = stage.get('usage') if isinstance(stage.get('usage'), dict) else {}
+            stage_map[stage_id] = {
+                'stage_id': stage_id,
+                'message': stage.get('message') or f'Этап {stage_id}',
+                'usage': {
+                    'prompt_tokens': int(usage.get('prompt_tokens', 0) or 0),
+                    'completion_tokens': int(usage.get('completion_tokens', 0) or 0),
+                    'total_tokens': int(usage.get('total_tokens', 0) or 0)
+                },
+                'request_count': int(stage.get('request_count', 0) or 0),
+                'llm_calls': []
+            }
+
+        uncategorized_calls = []
+        for index, raw_call in enumerate(llm_calls_raw, start=1):
+            if not isinstance(raw_call, dict):
+                continue
+            call_summary = _summarize_llm_call(raw_call, index)
+            stage_id = int(call_summary.get('stage_id', 0) or 0)
+            if stage_id > 0:
+                stage_bucket = stage_map.setdefault(
+                    stage_id,
+                    {
+                        'stage_id': stage_id,
+                        'message': call_summary.get('stage_message') or f'Этап {stage_id}',
+                        'usage': {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0},
+                        'request_count': 0,
+                        'llm_calls': []
+                    }
+                )
+                stage_bucket['llm_calls'].append(call_summary)
+            else:
+                uncategorized_calls.append(call_summary)
+
+        recent_events = [
+            {
+                'type': event.get('type'),
+                'message': event.get('message'),
+                'timestamp': event.get('timestamp')
+            }
+            for event in progress_events
+            if isinstance(event, dict)
+        ]
+
+        stages = [stage_map[key] for key in sorted(stage_map)]
+        return {
+            'available': bool(stages or uncategorized_calls or recent_events),
+            'artifacts_dir': artifacts_dir,
+            'llm_call_count': len(llm_calls_raw),
+            'error_count': sum(1 for call in llm_calls_raw if isinstance(call, dict) and call.get('status') == 'error'),
+            'progress_event_count': len(progress_events),
+            'stages': stages,
+            'uncategorized_calls': uncategorized_calls,
+            'recent_events': recent_events[-20:]
+        }
+
+    def _build_progress_snapshot(task_id: str, job: dict | None = None) -> dict | None:
+        """Return a durable progress snapshot for polling and page reload recovery."""
+        tracker = progress_store.get(task_id)
+        if not tracker:
+            return None
+
+        tracker_state = tracker.get_persisted_state()
+        events, _offset = tracker.read_events_since(0)
+        overall_usage = tracker_state.get('overall_usage') if isinstance(tracker_state.get('overall_usage'), dict) else {}
+        worker_health = job_queue.get_worker_health(app.config['JOB_STALE_AFTER_SECONDS'])
+        worker_available = app.config['EMBEDDED_WORKER_ENABLED'] or worker_health['healthy_workers'] > 0
+
+        return {
+            'task_id': task_id,
+            'status': job.get('status') if job else None,
+            'current_stage': tracker_state.get('current_stage_message'),
+            'current_stage_id': tracker_state.get('current_stage_id'),
+            'request_count': int(tracker_state.get('request_count', 0) or 0),
+            'overall_usage': {
+                'prompt_tokens': int(overall_usage.get('prompt_tokens', 0) or 0),
+                'completion_tokens': int(overall_usage.get('completion_tokens', 0) or 0),
+                'total_tokens': int(overall_usage.get('total_tokens', 0) or 0)
+            },
+            'stage_usage': tracker_state.get('stage_usage', []),
+            'events': events[-120:],
+            'completed': bool(tracker_state.get('completed', False)),
+            'error': bool(tracker_state.get('error', False)),
+            'artifacts_dir': tracker_state.get('artifacts_dir'),
+            'worker_available': bool(worker_available),
+            'worker_health': worker_health
+        }
+
+    def _build_compact_progress_snapshot(snapshot: dict, event_limit: int = 12) -> dict:
+        """Return a lighter snapshot variant for browser-compatibility mode."""
+        compact_events = []
+        worker_health = snapshot.get('worker_health') if isinstance(snapshot.get('worker_health'), dict) else {}
+        allowed_keys = {
+            'agent',
+            'model',
+            'worker_id',
+            'attempt',
+            'elapsed_seconds',
+            'queue_wait_seconds',
+            'retry_in_seconds',
+            'request_id',
+            'max_tokens',
+            'temperature',
+            'llm_event'
+        }
+        for event in snapshot.get('events', [])[-event_limit:]:
+            if not isinstance(event, dict):
+                continue
+
+            data = event.get('data') if isinstance(event.get('data'), dict) else {}
+            compact_data = {key: data[key] for key in allowed_keys if key in data}
+
+            if isinstance(data.get('usage'), dict):
+                usage = data['usage']
+                compact_data['usage'] = {
+                    'prompt_tokens': int(usage.get('prompt_tokens', 0) or 0),
+                    'completion_tokens': int(usage.get('completion_tokens', 0) or 0),
+                    'total_tokens': int(usage.get('total_tokens', 0) or 0)
+                }
+
+            if isinstance(data.get('worker_health'), dict):
+                worker_health = data['worker_health']
+                compact_data['worker_health'] = {
+                    'healthy_workers': int(worker_health.get('healthy_workers', 0) or 0),
+                    'known_workers': int(worker_health.get('known_workers', 0) or 0)
+                }
+
+            compact_events.append({
+                'type': event.get('type'),
+                'message': event.get('message'),
+                'timestamp': event.get('timestamp'),
+                'data': compact_data
+            })
+
+        return {
+            **snapshot,
+            'events': compact_events,
+            'stage_usage': [],
+            'worker_health': {
+                'healthy_workers': int(worker_health.get('healthy_workers', 0) or 0),
+                'known_workers': int(worker_health.get('known_workers', 0) or 0)
+            }
+        }
 
     def _frontend_build_available() -> bool:
         """Return whether the built standalone frontend is available for serving."""
@@ -563,7 +872,19 @@ def create_app(config_class=Config):
             )
 
             tracker.stage("⏳ Задача поставлена в очередь")
-            tracker.info("⏳ Анализ будет запущен worker-процессом")
+            worker_health = job_queue.get_worker_health(app.config['JOB_STALE_AFTER_SECONDS'])
+            tracker.info(
+                "⏳ Анализ будет запущен worker-процессом",
+                {
+                    "request_id": request_id,
+                    "filename": filename,
+                    "file_size": file_size,
+                    "worker_health": worker_health,
+                    "worker_available": bool(
+                        app.config['EMBEDDED_WORKER_ENABLED'] or worker_health['healthy_workers'] > 0
+                    )
+                }
+            )
             job_queue.enqueue(task_id, {
                 "task_id": task_id,
                 "filepath": analysis_filepath,
@@ -648,6 +969,22 @@ def create_app(config_class=Config):
         if not job:
             return jsonify({'error': 'Task not found', 'status': 404}), 404
         return jsonify(_build_task_view_model(job, include_payload=True))
+
+    @app.route('/api/tasks/<task_id>/progress')
+    def task_progress_snapshot(task_id):
+        """Return persisted task events and token stats for polling clients."""
+        job = job_queue.get(task_id)
+        tracker = progress_store.get(task_id)
+        if not job and not tracker:
+            return jsonify({'error': 'Task not found', 'status': 404}), 404
+
+        snapshot = _build_progress_snapshot(task_id, job=job or {})
+        if not snapshot:
+            return jsonify({'error': 'Task not found', 'status': 404}), 404
+        compact_mode = request.args.get('compact', '').strip().lower() in ('1', 'true', 'yes')
+        if compact_mode:
+            snapshot = _build_compact_progress_snapshot(snapshot)
+        return jsonify(snapshot)
 
     @app.route('/api/tasks')
     def list_active_tasks():

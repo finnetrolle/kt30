@@ -74,6 +74,15 @@ def process_analysis_job(
     try:
         ensure_not_canceled()
         if tracker:
+            tracker.info(
+                "🛠️ Воркер готовит окружение анализа",
+                {
+                    "request_id": request_id,
+                    "filename": filename,
+                    "analysis_filepath": filepath
+                }
+            )
+        if tracker:
             tracker.stage("📄 Парсинг документа...")
         logger.info("[%s] Starting document parsing...", request_id)
         document_content = parse_document(filepath)
@@ -112,6 +121,15 @@ def process_analysis_job(
         ensure_not_canceled()
         if tracker:
             tracker.stage("🤖 Запуск мульти-агентного анализа...")
+            tracker.info(
+                f"🤖 Отправляем задачу в LLM-конвейер: модель {Config.OPENAI_MODEL}",
+                {
+                    "request_id": request_id,
+                    "model": Config.OPENAI_MODEL,
+                    "llm_profile": Config.LLM_PROFILE,
+                    "document_characters": len(analysis_text)
+                }
+            )
         logger.info("[%s] Starting OpenAI analysis...", request_id)
         logger.info("[%s]   - API Base: %s", request_id, Config.OPENAI_API_BASE)
         logger.info("[%s]   - Model: %s", request_id, Config.OPENAI_MODEL)

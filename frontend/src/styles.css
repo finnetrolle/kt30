@@ -143,11 +143,22 @@ html.browser-lite body::after {
   display: none;
 }
 
+html.browser-lite body {
+  background: rgb(8 12 20);
+}
+
 html.browser-lite [data-glass="true"] {
   backdrop-filter: none;
+  box-shadow: none;
+  background: rgb(17 24 39);
 }
 
 html.browser-lite [data-motion="true"] {
   animation: none !important;
   transition: none !important;
+}
+
+html.browser-lite .shadow-xl,
+html.browser-lite .shadow-2xl {
+  box-shadow: none !important;
 }

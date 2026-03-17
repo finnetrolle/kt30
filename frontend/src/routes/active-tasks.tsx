@@ -4,7 +4,11 @@ import { Link, useNavigate } from "@tanstack/react-router";
 
 import type { ActiveTaskSummary } from "@/entities/task/model";
 import { cancelTask, getActiveTasks, getSession } from "@/shared/api/client";
-import { shouldUseBrowserCompatibilityMode } from "@/shared/lib/browser";
+import {
+  isDocumentVisible,
+  resolveDashboardPollingInterval,
+  shouldUseBrowserCompatibilityMode
+} from "@/shared/lib/browser";
 import {
   formatFileSize,
   formatUnixTime,
@@ -174,7 +178,7 @@ export function ActiveTasksPage() {
     queryKey: ["tasks", "active"],
     queryFn: getActiveTasks,
     enabled: !sessionQuery.isLoading && (!sessionQuery.data?.auth_enabled || sessionQuery.data?.authenticated),
-    refetchInterval: compatibilityMode ? 8000 : 4000
+    refetchInterval: () => resolveDashboardPollingInterval(compatibilityMode, isDocumentVisible())
   });
   const cancelMutation = useMutation({
     mutationFn: async (taskId: string) => {

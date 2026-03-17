@@ -3,6 +3,8 @@ import unittest
 import types
 import sys
 import os
+import json
+from pathlib import Path
 
 os.environ.setdefault("APP_ENV", "testing")
 
@@ -156,6 +158,129 @@ class TaskApiTests(unittest.TestCase):
         self.assertEqual(len(payload["recent_results"]), 1)
         self.assertEqual(payload["recent_results"][0]["task_id"], "task-finished")
         self.assertEqual(payload["recent_results"][0]["result_id"], "result-1")
+
+    def test_task_progress_snapshot_returns_persisted_events_and_usage(self):
+        self.job_queue.enqueue("task-progress", {"task_id": "task-progress", "filename": "demo.docx"})
+        tracker = self.progress_store.create("task-progress")
+        tracker.stage("Парсинг документа...")
+        tracker.info("Документ загружен")
+        tracker.usage("Аналитик", {"prompt_tokens": 15, "completion_tokens": 5})
+
+        response = self.client.get("/api/tasks/task-progress/progress")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["task_id"], "task-progress")
+        self.assertEqual(payload["status"], JobStatus.QUEUED)
+        self.assertEqual(payload["current_stage"], "Парсинг документа...")
+        self.assertEqual(payload["request_count"], 1)
+        self.assertEqual(payload["overall_usage"]["total_tokens"], 20)
+        self.assertGreaterEqual(len(payload["events"]), 2)
+        self.assertEqual(payload["stage_usage"][0]["usage"]["total_tokens"], 20)
+
+    def test_task_progress_snapshot_compact_mode_strips_heavy_fields(self):
+        self.job_queue.enqueue("task-compact", {"task_id": "task-compact", "filename": "demo.docx"})
+        tracker = self.progress_store.create("task-compact")
+        tracker.info(
+            "Запрос отправлен",
+            {
+                "agent": "planner",
+                "model": "gpt-test",
+                "request_id": "req-1",
+                "prompt_preview": "очень длинный prompt",
+                "response_preview": "очень длинный response",
+                "system_prompt_preview": "очень длинный system prompt",
+                "usage": {
+                    "prompt_tokens": 120,
+                    "completion_tokens": 30,
+                    "total_tokens": 150
+                },
+                "worker_health": {
+                    "healthy_workers": 1,
+                    "known_workers": 2,
+                    "other_field": "ignored"
+                }
+            }
+        )
+        tracker.usage("Аналитик", {"prompt_tokens": 15, "completion_tokens": 5})
+
+        response = self.client.get("/api/tasks/task-compact/progress?compact=1")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["stage_usage"], [])
+        self.assertGreaterEqual(len(payload["events"]), 1)
+        self.assertEqual(payload["worker_health"], {"healthy_workers": 1, "known_workers": 2})
+        event_data = payload["events"][0]["data"]
+        self.assertEqual(event_data["agent"], "planner")
+        self.assertEqual(event_data["model"], "gpt-test")
+        self.assertEqual(event_data["usage"]["total_tokens"], 150)
+        self.assertEqual(event_data["worker_health"], {"healthy_workers": 1, "known_workers": 2})
+        self.assertNotIn("prompt_preview", event_data)
+        self.assertNotIn("response_preview", event_data)
+        self.assertNotIn("system_prompt_preview", event_data)
+
+    def test_result_payload_includes_execution_trace_summary(self):
+        artifacts_dir = Path(self.temp_dir.name) / "analysis_runs" / "run-1"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        with open(artifacts_dir / "llm_calls.ndjson", "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "agent": "Планировщик WBS",
+                "model": "gpt-test",
+                "status": "success",
+                "attempt": 1,
+                "stage_id": 2,
+                "stage_message": "Формирование WBS",
+                "usage": {
+                    "prompt_tokens": 120,
+                    "completion_tokens": 80,
+                    "total_tokens": 200
+                },
+                "messages": [
+                    {"role": "user", "content": "Детализируй пакет работ в набор задач.\n\nКонтекст:\n{\"work_package\": {\"name\": \"Интеграция API\"}}"}
+                ]
+            }, ensure_ascii=False))
+            handle.write("\n")
+        with open(artifacts_dir / "progress_events.ndjson", "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "type": "stage",
+                "message": "Формирование WBS",
+                "timestamp": 1710000000,
+                "data": {"stage_id": 2}
+            }, ensure_ascii=False))
+            handle.write("\n")
+
+        self.result_store.save(
+            "result-trace",
+            {
+                "filename": "trace.docx",
+                "timestamp": "2026-03-16T12:00:00Z",
+                "result": {"wbs": {"phases": []}},
+                "usage": {},
+                "metadata": {},
+                "token_usage": {
+                    "totals": {"total_tokens": 200, "prompt_tokens": 120, "completion_tokens": 80},
+                    "request_count": 1,
+                    "stages": [
+                        {
+                            "stage_id": 2,
+                            "message": "Формирование WBS",
+                            "request_count": 1,
+                            "usage": {"total_tokens": 200, "prompt_tokens": 120, "completion_tokens": 80}
+                        }
+                    ]
+                },
+                "artifacts_dir": str(artifacts_dir)
+            }
+        )
+
+        response = self.client.get("/api/results/result-trace")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["execution_trace"]["available"])
+        self.assertEqual(payload["execution_trace"]["llm_call_count"], 1)
+        self.assertEqual(payload["execution_trace"]["stages"][0]["llm_calls"][0]["description"], "Детализация пакета работ «Интеграция API» в задачи")
 
     def test_ready_is_green_when_worker_heartbeat_exists(self):
         self.job_queue.heartbeat("worker-1")

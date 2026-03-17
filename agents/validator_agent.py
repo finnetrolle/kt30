@@ -286,6 +286,10 @@ class ValidatorAgent(BaseAgent):
         """Validate a work package."""
         wp_id = wp.get('id', 'unknown')
         location = f"{parent_location}.wp[{wp_id}]"
+        wp_requirement_ids = [req_id for req_id in wp.get('requirement_ids', []) if req_id]
+
+        if not wp_requirement_ids:
+            result.add_issue("traceability", "Work package has no requirement_ids", location)
         
         # Check tasks
         tasks = wp.get('tasks', [])
@@ -295,7 +299,7 @@ class ValidatorAgent(BaseAgent):
         
         # Validate each task
         for task in tasks:
-            self._validate_task(task, location, result)
+            self._validate_task(task, location, wp_requirement_ids, result)
         
         # Check work package hours vs sum of task hours
         wp_hours = wp.get('estimated_hours', 0)
@@ -309,11 +313,21 @@ class ValidatorAgent(BaseAgent):
                     location)
     
     def _validate_task(self, task: Dict[str, Any], 
-                       parent_location: str, result: ValidationResult):
+                       parent_location: str, wp_requirement_ids: List[str], result: ValidationResult):
         """Validate a single task."""
         task_id = task.get('id', 'unknown')
         task_name = task.get('name', '')
         location = f"{parent_location}.task[{task_id}]"
+        task_requirement_ids = [req_id for req_id in task.get('requirement_ids', []) if req_id]
+
+        if not task_requirement_ids:
+            result.add_issue("traceability", "Task has no requirement_ids", location)
+        elif wp_requirement_ids and not set(task_requirement_ids).issubset(set(wp_requirement_ids)):
+            result.add_issue(
+                "traceability",
+                "Task requirement_ids must be a subset of the parent work package requirement_ids",
+                location
+            )
         
         hours = task.get('estimated_hours', 0)
         
@@ -474,10 +488,37 @@ class ValidatorAgent(BaseAgent):
                     
                     # Bottom-up: WP hours = sum of task hours
                     if wp.get('tasks'):
-                        wp['estimated_hours'] = round(wp_hours_sum)
+                        wp_hours = wp_hours_sum
                     else:
                         wp_hours = self._coerce_to_number(wp.get('estimated_hours', 0))
-                        wp['estimated_hours'] = round(max(min_task, wp_hours))
+                    wp['estimated_hours'] = round(max(min_task, wp_hours))
+
+                    if not wp.get('requirement_ids'):
+                        inherited_requirement_ids = []
+                        for task in wp.get('tasks', []):
+                            for requirement_id in task.get('requirement_ids', []):
+                                if requirement_id and requirement_id not in inherited_requirement_ids:
+                                    inherited_requirement_ids.append(requirement_id)
+                        wp['requirement_ids'] = inherited_requirement_ids
+
+                    parent_requirement_ids = []
+                    for requirement_id in wp.get('requirement_ids', []):
+                        if requirement_id and requirement_id not in parent_requirement_ids:
+                            parent_requirement_ids.append(requirement_id)
+                    wp['requirement_ids'] = parent_requirement_ids
+
+                    for task in wp.get('tasks', []):
+                        task_requirement_ids = []
+                        for requirement_id in task.get('requirement_ids', []):
+                            if not requirement_id:
+                                continue
+                            if parent_requirement_ids and requirement_id not in parent_requirement_ids:
+                                continue
+                            if requirement_id not in task_requirement_ids:
+                                task_requirement_ids.append(requirement_id)
+                        if not task_requirement_ids:
+                            task_requirement_ids = list(parent_requirement_ids)
+                        task['requirement_ids'] = task_requirement_ids
                     
                     # Recalculate WP duration_days
                     wp['duration_days'] = math.ceil(wp['estimated_hours'] / 8)

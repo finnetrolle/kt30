@@ -32,4 +32,12 @@ describe("browser compatibility mode", () => {
 
     expect(shouldUseBrowserCompatibilityMode()).toBe(false);
   });
+
+  it("uses safer polling intervals in compatibility mode", async () => {
+    const { resolveTaskPollingInterval } = await import("@/shared/lib/browser");
+
+    expect(resolveTaskPollingInterval(true, true)).toBe(45000);
+    expect(resolveTaskPollingInterval(true, false)).toBe(120000);
+    expect(resolveTaskPollingInterval(false, true)).toBe(3000);
+  });
 });

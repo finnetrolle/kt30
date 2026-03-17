@@ -32,6 +32,30 @@ export function shouldUseBrowserCompatibilityMode() {
   return isSafariLikeBrowser();
 }
 
+export function isDocumentVisible() {
+  if (typeof document === "undefined") {
+    return true;
+  }
+
+  return document.visibilityState !== "hidden";
+}
+
+export function resolveTaskPollingInterval(compatibilityMode: boolean, visible = true) {
+  if (!visible) {
+    return compatibilityMode ? 120000 : 10000;
+  }
+
+  return compatibilityMode ? 45000 : 3000;
+}
+
+export function resolveDashboardPollingInterval(compatibilityMode: boolean, visible = true) {
+  if (!visible) {
+    return compatibilityMode ? 60000 : 15000;
+  }
+
+  return compatibilityMode ? 30000 : 4000;
+}
+
 export function applyBrowserCompatibilityMode() {
   if (!shouldUseBrowserCompatibilityMode() || typeof document === "undefined") {
     return;

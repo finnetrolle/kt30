@@ -44,6 +44,48 @@ const payload: ResultPayload = {
     excel_export: "/api/results/result-42/export.xlsx",
     legacy_excel_export: "/export/excel/result-42"
   },
+  execution_trace: {
+    available: true,
+    llm_call_count: 2,
+    error_count: 0,
+    progress_event_count: 6,
+    stages: [
+      {
+        stage_id: 2,
+        message: "Draft WBS",
+        request_count: 2,
+        usage: {
+          total_tokens: 450,
+          prompt_tokens: 320,
+          completion_tokens: 130
+        },
+        llm_calls: [
+          {
+            index: 1,
+            agent: "Планировщик WBS",
+            description: "Детализация пакета работ «Inventory» в задачи",
+            status: "success",
+            attempt: 1,
+            model: "gpt-5.4",
+            elapsed_seconds: 12,
+            usage: {
+              total_tokens: 210,
+              prompt_tokens: 140,
+              completion_tokens: 70
+            }
+          }
+        ]
+      }
+    ],
+    uncategorized_calls: [],
+    recent_events: [
+      {
+        type: "info",
+        message: "Документ загружен",
+        timestamp: 1710000000
+      }
+    ]
+  },
   result: {
     project_info: {
       project_name: "Standalone frontend migration",
@@ -108,7 +150,9 @@ describe("ResultSummary", () => {
     );
     expect(screen.getByRole("button", { name: /скачать pdf/i })).toBeInTheDocument();
     expect(screen.getByText("Использование токенов")).toBeInTheDocument();
+    expect(screen.getByText("Журнал запуска")).toBeInTheDocument();
     expect(screen.getByText("Формируем черновик ИСР")).toBeInTheDocument();
+    expect(screen.getByText(/детализация пакета работ «inventory» в задачи/i)).toBeInTheDocument();
     expect(screen.getByText("Допущения")).toBeInTheDocument();
     expect(screen.getByText("Риски")).toBeInTheDocument();
     expect(screen.getByText("Рекомендации")).toBeInTheDocument();

@@ -50,6 +50,18 @@ class JobWorker:
             return False
 
         logger.info("Worker %s processing task %s", self.worker_id, job["task_id"])
+        tracker = self.progress_store.get(job["task_id"])
+        if tracker:
+            queue_wait_seconds = max(0.0, time.time() - float(job.get("created_at") or time.time()))
+            tracker.info(
+                f"🧵 Задачу взял воркер {self.worker_id}",
+                {
+                    "worker_id": self.worker_id,
+                    "queue_wait_seconds": round(queue_wait_seconds, 2),
+                    "job_status": job.get("status"),
+                    "started_at": job.get("started_at")
+                }
+            )
         process_analysis_job(job, self.result_store, self.progress_store, self.job_queue)
         return True
 

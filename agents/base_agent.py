@@ -35,7 +35,13 @@ class AgentEventLogger:
         if self._progress:
             self._progress.agent(agent_name, f"🤖 {agent_name}: {task}")
     
-    def log_llm_request(self, agent_name: str, message_preview: str, request_id: str = None):
+    def log_llm_request(
+        self,
+        agent_name: str,
+        message_preview: str,
+        request_id: str = None,
+        data: Optional[Dict[str, Any]] = None
+    ):
         """Log when an agent sends a request to the LLM."""
         logger.info(f"\n{'─'*60}")
         logger.info(f"📤 [{agent_name}] ОТПРАВКА ЗАПРОСА В LLM")
@@ -45,9 +51,24 @@ class AgentEventLogger:
         logger.info(f"   {message_preview[:200]}...")
         logger.info(f"{'─'*60}")
         if self._progress:
-            self._progress.agent(agent_name, f"📤 {agent_name}: отправка запроса в LLM...")
+            if hasattr(self._progress, "llm_request"):
+                self._progress.llm_request(
+                    agent_name,
+                    str((data or {}).get("model", "LLM")),
+                    message_preview,
+                    system_prompt=(data or {}).get("system_prompt"),
+                    data=data
+                )
+            else:
+                self._progress.agent(agent_name, f"📤 {agent_name}: отправка запроса в LLM...", data)
     
-    def log_llm_response(self, agent_name: str, response_preview: str, elapsed_time: float = None):
+    def log_llm_response(
+        self,
+        agent_name: str,
+        response_preview: str,
+        elapsed_time: float = None,
+        data: Optional[Dict[str, Any]] = None
+    ):
         """Log when an agent receives a response from the LLM."""
         logger.info(f"\n{'─'*60}")
         logger.info(f"📥 [{agent_name}] ПОЛУЧЕН ОТВЕТ ОТ LLM")
@@ -57,8 +78,22 @@ class AgentEventLogger:
         logger.info(f"   {response_preview[:300]}...")
         logger.info(f"{'─'*60}")
         if self._progress:
-            time_str = f" ({elapsed_time:.1f} сек)" if elapsed_time else ""
-            self._progress.agent(agent_name, f"📥 {agent_name}: ответ получен{time_str}")
+            payload = {
+                **(data or {}),
+                "elapsed_seconds": round(elapsed_time, 2) if elapsed_time is not None else None
+            }
+            if hasattr(self._progress, "llm_response"):
+                self._progress.llm_response(
+                    agent_name,
+                    str(payload.get("model", "LLM")),
+                    response_preview,
+                    elapsed_seconds=elapsed_time,
+                    usage=payload.get("usage"),
+                    data=payload
+                )
+            else:
+                time_str = f" ({elapsed_time:.1f} сек)" if elapsed_time else ""
+                self._progress.agent(agent_name, f"📥 {agent_name}: ответ получен{time_str}", payload)
     
     def log_agent_handoff(self, from_agent: str, to_agent: str, data_description: str):
         """Log when one agent hands off work to another agent."""
@@ -179,8 +214,23 @@ class BaseAgent:
         Returns:
             Response dictionary
         """
+        active_system_prompt = system_prompt or self._build_system_prompt()
+
         # Log LLM request
-        self.event_logger.log_llm_request(self.name, message, request_id)
+        self.event_logger.log_llm_request(
+            self.name,
+            message,
+            request_id,
+            data={
+                "request_id": request_id,
+                "model": self.model,
+                "system_prompt": active_system_prompt,
+                "expect_json": expect_json,
+                "use_history": use_history,
+                "max_tokens": max_tokens if max_tokens is not None else self.DEFAULT_MAX_TOKENS,
+                "temperature": temperature if temperature is not None else self.DEFAULT_TEMPERATURE
+            }
+        )
         
         message_entry = {
             "role": "user",
@@ -190,11 +240,11 @@ class BaseAgent:
         if use_history:
             self.conversation_history.append(message_entry)
             messages = [
-                {"role": "system", "content": system_prompt or self._build_system_prompt()}
+                {"role": "system", "content": active_system_prompt}
             ] + self.conversation_history
         else:
             messages = [
-                {"role": "system", "content": system_prompt or self._build_system_prompt()},
+                {"role": "system", "content": active_system_prompt},
                 message_entry
             ]
         
@@ -242,9 +292,6 @@ class BaseAgent:
                 elapsed_time = time.time() - start_time
                 response_text = response.choices[0].message.content
                 
-                # Log LLM response
-                self.event_logger.log_llm_response(self.name, response_text, elapsed_time)
-                
                 # Log token usage if available
                 if response.usage:
                     usage = {
@@ -261,7 +308,9 @@ class BaseAgent:
                             usage,
                             {
                                 "elapsed_seconds": round(elapsed_time, 2),
-                                "model": self.model
+                                "model": self.model,
+                                "request_id": request_id,
+                                "attempt": attempt + 1
                             }
                         )
                 else:
@@ -270,6 +319,19 @@ class BaseAgent:
                         "completion_tokens": 0,
                         "total_tokens": 0
                     }
+
+                # Log LLM response
+                self.event_logger.log_llm_response(
+                    self.name,
+                    response_text,
+                    elapsed_time,
+                    data={
+                        "request_id": request_id,
+                        "model": self.model,
+                        "usage": usage,
+                        "attempt": attempt + 1
+                    }
+                )
                 
                 if use_history:
                     self.conversation_history.append({
@@ -399,6 +461,19 @@ class BaseAgent:
                 
                 if is_retryable and attempt < max_retries - 1:
                     logger.warning(f"   ⚠️ Retryable error (attempt {attempt + 1}): {error_str}")
+                    if self._progress_tracker:
+                        retry_delay = base_delay * (2 ** attempt)
+                        self._progress_tracker.info(
+                            f"⚠️ {self.name}: временная ошибка LLM, повтор через {retry_delay:.1f} сек",
+                            {
+                                "agent": self.name,
+                                "model": self.model,
+                                "request_id": request_id,
+                                "attempt": attempt + 1,
+                                "retry_in_seconds": retry_delay,
+                                "error": error_str
+                            }
+                        )
                     continue
                 else:
                     self.event_logger.log_agent_error(self.name, error_str)

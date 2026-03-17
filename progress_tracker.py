@@ -50,6 +50,20 @@ def _merge_usage(target: Dict[str, int], delta: Optional[Dict[str, Any]] = None)
     return target
 
 
+def _preview_text(value: Any, limit: int = 280) -> str:
+    """Return a compact single-line preview for UI-friendly event payloads."""
+    if value is None:
+        return ""
+
+    if not isinstance(value, str):
+        value = str(value)
+
+    normalized = " ".join(value.strip().split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: max(0, limit - 1)].rstrip() + "…"
+
+
 class ProgressTracker:
     """Thread-safe progress tracker for a single analysis task.
 
@@ -338,8 +352,18 @@ class ProgressTracker:
 
     def record_llm_call(self, payload: Dict[str, Any]):
         """Persist an LLM interaction if artifact storage is available."""
-        if self.run_artifacts:
-            self.run_artifacts.record_llm_call(payload)
+        if not self.run_artifacts:
+            return
+
+        with self._lock:
+            enriched_payload = {
+                **payload,
+                "stage_id": payload.get("stage_id", self._current_stage_id or None),
+                "stage_message": payload.get("stage_message", self._current_stage_message or None),
+                "progress_request_count": int(payload.get("progress_request_count", self._request_count or 0))
+            }
+
+        self.run_artifacts.record_llm_call(enriched_payload)
 
     def write_json_artifact(self, relative_path: str, payload: Any):
         """Write a JSON artifact for this run."""
@@ -379,6 +403,55 @@ class ProgressTracker:
     def info(self, message: str, data: Optional[Dict[str, Any]] = None):
         """Emit an informational event."""
         self.emit("info", message, data)
+
+    def llm_request(
+        self,
+        agent_name: str,
+        model: str,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        data: Optional[Dict[str, Any]] = None
+    ):
+        """Emit a detailed LLM request event for the live progress feed."""
+        extra_data = dict(data or {})
+        extra_data.pop("system_prompt", None)
+        extra_data.pop("prompt", None)
+        payload = {
+            "agent": agent_name,
+            "model": model,
+            "llm_event": "request_started",
+            "prompt_preview": _preview_text(prompt, limit=480),
+            "prompt_characters": len(prompt or ""),
+            "system_prompt_preview": _preview_text(system_prompt, limit=280),
+            "system_prompt_characters": len(system_prompt or ""),
+            **extra_data
+        }
+        self.emit("agent", f"📤 {agent_name}: запрос отправлен в {model}", payload)
+
+    def llm_response(
+        self,
+        agent_name: str,
+        model: str,
+        response_text: str,
+        elapsed_seconds: Optional[float] = None,
+        usage: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None
+    ):
+        """Emit a detailed LLM response event for the live progress feed."""
+        duration_suffix = f" за {elapsed_seconds:.1f} сек" if elapsed_seconds is not None else ""
+        extra_data = dict(data or {})
+        extra_data.pop("response_text", None)
+        payload = {
+            "agent": agent_name,
+            "model": model,
+            "llm_event": "response_received",
+            "response_preview": _preview_text(response_text, limit=480),
+            "response_characters": len(response_text or ""),
+            "elapsed_seconds": round(elapsed_seconds, 2) if elapsed_seconds is not None else None,
+            "usage": _normalize_usage(usage),
+            **extra_data
+        }
+        self.emit("agent", f"📥 {agent_name}: ответ получен от {model}{duration_suffix}", payload)
 
     def usage(self, agent_name: str, usage: Dict[str, Any], data: Optional[Dict[str, Any]] = None):
         """Emit token usage for the current stage and aggregate totals."""

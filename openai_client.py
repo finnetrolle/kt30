@@ -181,6 +181,20 @@ JSON:"""
                 "messages": api_params["messages"],
                 "response_format": api_params.get("response_format")
             }
+
+            if progress_tracker and hasattr(progress_tracker, "llm_request"):
+                progress_tracker.llm_request(
+                    "Single Agent",
+                    self.model,
+                    user_prompt,
+                    system_prompt=system_prompt,
+                    data={
+                        "request_id": request_id,
+                        "expect_json": True,
+                        "max_tokens": api_params["max_tokens"],
+                        "temperature": api_params["temperature"]
+                    }
+                )
             
             # Make API call
             logger.info(f"{log_prefix}Sending request to API...")
@@ -215,6 +229,18 @@ JSON:"""
                             "model": self.model
                         }
                     )
+
+            if progress_tracker and hasattr(progress_tracker, "llm_response"):
+                progress_tracker.llm_response(
+                    "Single Agent",
+                    self.model,
+                    result_text,
+                    elapsed_seconds=elapsed_time,
+                    usage=usage_data,
+                    data={
+                        "request_id": request_id
+                    }
+                )
 
             if progress_tracker:
                 progress_tracker.record_llm_call({

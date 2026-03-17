@@ -9,6 +9,85 @@ import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/shared/ui/card";
 
+function formatCompactValue(value: number) {
+  return value.toLocaleString("ru-RU");
+}
+
+function formatSeconds(seconds: number) {
+  if (!Number.isFinite(seconds)) {
+    return "н/д";
+  }
+
+  if (seconds >= 60) {
+    return formatElapsedTime(Math.round(seconds));
+  }
+
+  return `${seconds.toLocaleString("ru-RU")} с`;
+}
+
+function eventFacts(event: TaskEvent) {
+  const facts: string[] = [];
+  const { data } = event;
+
+  if (data.agent) {
+    facts.push(`Агент: ${translateText(String(data.agent), String(data.agent))}`);
+  }
+
+  if (data.model) {
+    facts.push(`Модель: ${String(data.model)}`);
+  }
+
+  if (data.worker_id) {
+    facts.push(`Воркер: ${String(data.worker_id)}`);
+  }
+
+  if (typeof data.attempt === "number") {
+    facts.push(`Попытка: ${formatCompactValue(data.attempt)}`);
+  }
+
+  if (typeof data.elapsed_seconds === "number") {
+    facts.push(`Время: ${formatSeconds(data.elapsed_seconds)}`);
+  }
+
+  if (typeof data.queue_wait_seconds === "number") {
+    facts.push(`Ожидание в очереди: ${formatSeconds(data.queue_wait_seconds)}`);
+  }
+
+  if (typeof data.retry_in_seconds === "number") {
+    facts.push(`Повтор через: ${formatSeconds(data.retry_in_seconds)}`);
+  }
+
+  if (data.request_id) {
+    facts.push(`Request ID: ${String(data.request_id)}`);
+  }
+
+  if (typeof data.max_tokens === "number") {
+    facts.push(`max_tokens: ${formatCompactValue(data.max_tokens)}`);
+  }
+
+  if (typeof data.temperature === "number") {
+    facts.push(`temperature: ${String(data.temperature)}`);
+  }
+
+  if (data.usage && typeof data.usage === "object") {
+    const usage = data.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    facts.push(
+      `Токены: ${formatCompactValue(Number(usage.total_tokens ?? 0))} ` +
+        `(prompt ${formatCompactValue(Number(usage.prompt_tokens ?? 0))}, ` +
+        `completion ${formatCompactValue(Number(usage.completion_tokens ?? 0))})`
+    );
+  }
+
+  if (data.worker_health && typeof data.worker_health === "object") {
+    const workerHealth = data.worker_health as { healthy_workers?: number; known_workers?: number };
+    facts.push(
+      `Воркеры: ${formatCompactValue(Number(workerHealth.healthy_workers ?? 0))}/${formatCompactValue(Number(workerHealth.known_workers ?? 0))}`
+    );
+  }
+
+  return facts;
+}
+
 function resolveEventVariant(type: string) {
   if (type.includes("error")) {
     return "destructive" as const;
@@ -42,6 +121,7 @@ interface TaskProgressPanelProps {
   error: string | null;
   onCancel: () => Promise<void> | void;
   isCanceling: boolean;
+  compactMode?: boolean;
   compatibilityNotice?: string | null;
 }
 
@@ -58,6 +138,7 @@ export function TaskProgressPanel({
   error,
   onCancel,
   isCanceling,
+  compactMode = false,
   compatibilityNotice
 }: TaskProgressPanelProps) {
   if (!taskId) {
@@ -72,6 +153,7 @@ export function TaskProgressPanel({
   }
 
   const canCancel = jobStatus === "queued" || jobStatus === "running";
+  const visibleEvents = compactMode ? events.slice(-15) : events;
   const summaryItems = [
     { label: "Этап", value: translateText(stage) },
     { label: "Токены", value: totalTokens.toLocaleString("ru-RU") },
@@ -114,7 +196,7 @@ export function TaskProgressPanel({
           </div>
         ) : null}
 
-        {stageUsage.length > 0 ? (
+        {stageUsage.length > 0 && !compactMode ? (
           <div className="grid gap-3 lg:grid-cols-2">
             {stageUsage.map((entry) => (
               <Card key={entry.stage_id} className="border-border/70 bg-background/60">
@@ -136,21 +218,66 @@ export function TaskProgressPanel({
         ) : null}
 
         <div className="space-y-3">
-          {events.length >= 60 ? (
+          {events.length >= 60 && !compactMode ? (
             <p className="text-xs text-muted-foreground">Показаны последние 60 событий, чтобы не перегружать браузер.</p>
           ) : null}
+          {compactMode && events.length > visibleEvents.length ? (
+            <p className="text-xs text-muted-foreground">
+              В Safari показываем только последние {visibleEvents.length} событий, чтобы не перегружать WebKit.
+            </p>
+          ) : null}
           <div className="grid max-h-[440px] gap-3 overflow-auto pr-1">
-            {events.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Ждем первое событие от воркера.</p>
+            {visibleEvents.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border/70 bg-background/40 px-4 py-3">
+                <p className="text-sm text-foreground">Журнал пока пуст, но задача уже отслеживается.</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Статус: {translateTaskStatus(jobStatus, isStreaming)} | Этап: {translateText(stage)}
+                </p>
+              </div>
             ) : (
-              events.map((event) => (
+              visibleEvents.map((event) => (
                 <div
                   key={`${event.type}-${event.timestamp}`}
                   className="grid grid-cols-[auto_1fr] gap-3 rounded-xl border border-border/70 bg-background/60 px-4 py-3"
                 >
                   <Badge variant={resolveEventVariant(event.type)}>{translateEventType(event.type)}</Badge>
-                  <div className="space-y-1">
+                  <div className="space-y-2">
                     <strong className="block text-sm text-foreground">{translateText(event.message)}</strong>
+                    {eventFacts(event).length > 0 ? (
+                      <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+                        {compactMode ? (
+                          <span>{eventFacts(event).join(" | ")}</span>
+                        ) : (
+                          eventFacts(event).map((fact) => (
+                            <span key={fact} className="rounded-full border border-border/70 bg-muted/30 px-2 py-1">
+                              {fact}
+                            </span>
+                          ))
+                        )}
+                      </div>
+                    ) : null}
+                    {!compactMode && event.data.prompt_preview ? (
+                      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                        <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Prompt preview</p>
+                        <p className="mt-1 text-xs leading-5 text-foreground/90 break-words">{event.data.prompt_preview}</p>
+                      </div>
+                    ) : null}
+                    {!compactMode && event.data.system_prompt_preview ? (
+                      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                        <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">System prompt</p>
+                        <p className="mt-1 text-xs leading-5 text-foreground/80 break-words">
+                          {event.data.system_prompt_preview}
+                        </p>
+                      </div>
+                    ) : null}
+                    {!compactMode && event.data.response_preview ? (
+                      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+                        <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Response preview</p>
+                        <p className="mt-1 text-xs leading-5 text-foreground/90 break-words">
+                          {event.data.response_preview}
+                        </p>
+                      </div>
+                    ) : null}
                     <p className="text-xs text-muted-foreground">
                       {new Date(event.timestamp * 1000).toLocaleTimeString("ru-RU")}
                     </p>

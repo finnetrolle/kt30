@@ -110,6 +110,60 @@ export interface ResultPayload {
     legacy_excel_export: string;
     frontend_html?: string;
   };
+  execution_trace?: {
+    available: boolean;
+    artifacts_dir?: string | null;
+    llm_call_count: number;
+    error_count: number;
+    progress_event_count: number;
+    stages: Array<{
+      stage_id: number;
+      message: string;
+      request_count: number;
+      usage: {
+        total_tokens?: number;
+        prompt_tokens?: number;
+        completion_tokens?: number;
+      };
+      llm_calls: Array<{
+        index: number;
+        agent: string;
+        description: string;
+        status: string;
+        attempt: number;
+        model?: string | null;
+        elapsed_seconds?: number | null;
+        usage: {
+          total_tokens?: number;
+          prompt_tokens?: number;
+          completion_tokens?: number;
+        };
+        error?: string | null;
+        error_type?: string | null;
+      }>;
+    }>;
+    uncategorized_calls?: Array<{
+      index: number;
+      agent: string;
+      description: string;
+      status: string;
+      attempt: number;
+      model?: string | null;
+      elapsed_seconds?: number | null;
+      usage: {
+        total_tokens?: number;
+        prompt_tokens?: number;
+        completion_tokens?: number;
+      };
+      error?: string | null;
+      error_type?: string | null;
+    }>;
+    recent_events?: Array<{
+      type?: string;
+      message?: string;
+      timestamp?: number;
+    }>;
+  };
   result: ResultDocument;
 }
 

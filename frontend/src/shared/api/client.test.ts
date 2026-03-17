@@ -78,6 +78,56 @@ describe("shared api client", () => {
     expect(task.payload).toEqual({ filename: "spec.docx" });
   });
 
+  it("parses persisted task progress snapshots for polling fallback", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        task_id: "task-42",
+        status: "running",
+        current_stage: "Парсинг документа...",
+        current_stage_id: 1,
+        request_count: 2,
+        overall_usage: {
+          total_tokens: 320,
+          prompt_tokens: 200,
+          completion_tokens: 120
+        },
+        stage_usage: [
+          {
+            stage_id: 1,
+            message: "Парсинг документа...",
+            request_count: 2,
+            usage: {
+              total_tokens: 320,
+              prompt_tokens: 200,
+              completion_tokens: 120
+            }
+          }
+        ],
+        events: [
+          {
+            type: "info",
+            message: "Документ загружен",
+            timestamp: 1710000000,
+            data: {}
+          }
+        ],
+        completed: false,
+        error: false,
+        worker_available: true
+      })
+    );
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getTaskProgressSnapshot } = await import("@/shared/api/client");
+    const snapshot = await getTaskProgressSnapshot("task-42");
+
+    expect(snapshot.task_id).toBe("task-42");
+    expect(snapshot.overall_usage.total_tokens).toBe(320);
+    expect(snapshot.stage_usage[0]?.message).toBe("Парсинг документа...");
+    expect(snapshot.events[0]?.message).toBe("Документ загружен");
+  });
+
   it("parses the active task dashboard payload", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
