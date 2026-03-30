@@ -1,0 +1,330 @@
+{
+  "cases": [
+    {
+      "case_id": "payments-api-demo",
+      "expected": {
+        "project_type": "API сервис",
+        "complexity_level": "Высокий",
+        "total_hours_range": [120, 560],
+        "required_requirement_ids": ["FR-1", "FR-2"],
+        "required_phase_names": ["Разработка", "Тестирование"],
+        "min_confidence_score": 0.7,
+        "min_total_score": 75
+      },
+      "result": {
+        "result": {
+          "project_info": {
+            "project_name": "Payments API",
+            "project_type": "API сервис",
+            "complexity_level": "Высокий",
+            "total_estimated_hours": 320
+          },
+          "wbs": {
+            "phases": [
+              {
+                "name": "Разработка",
+                "estimated_hours": 200,
+                "work_packages": [
+                  {
+                    "name": "API логика",
+                    "requirement_ids": ["FR-1", "FR-2"],
+                    "tasks": [
+                      {
+                        "name": "Реализовать аутентификацию",
+                        "requirement_ids": ["FR-1"]
+                      },
+                      {
+                        "name": "Добавить аудит операций",
+                        "requirement_ids": ["FR-2"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Тестирование",
+                "estimated_hours": 120,
+                "work_packages": [
+                  {
+                    "name": "Проверка API",
+                    "requirement_ids": ["FR-1", "FR-2"],
+                    "tasks": [
+                      {
+                        "name": "Проверить сценарии безопасности",
+                        "requirement_ids": ["FR-1"]
+                      },
+                      {
+                        "name": "Проверить аудит",
+                        "requirement_ids": ["FR-2"]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "metadata": {
+          "min_confidence_score": 0.7,
+          "requirements_coverage": {
+            "total": 2,
+            "covered": 2,
+            "covered_by_ids": 2,
+            "covered_by_name_fallback": 0,
+            "uncovered": [],
+            "coverage_matrix": [
+              {
+                "requirement_id": "FR-1",
+                "requirement_name": "Аутентификация",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              },
+              {
+                "requirement_id": "FR-2",
+                "requirement_name": "Аудит операций",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              }
+            ]
+          }
+        },
+        "validation": {
+          "confidence_score": 0.82
+        }
+      }
+    },
+    {
+      "case_id": "customer-portal-demo",
+      "expected": {
+        "project_type": "Веб-приложение",
+        "complexity_level": "Средний",
+        "total_hours_range": [180, 320],
+        "required_requirement_ids": ["FR-10", "FR-11", "FR-12"],
+        "required_phase_names": ["Планирование и анализ", "Разработка", "Тестирование", "Развертывание"],
+        "min_confidence_score": 0.75,
+        "min_total_score": 75
+      },
+      "result": {
+        "result": {
+          "project_info": {
+            "project_name": "Customer Portal",
+            "project_type": "Веб-приложение",
+            "complexity_level": "Средний",
+            "total_estimated_hours": 240
+          },
+          "wbs": {
+            "phases": [
+              {
+                "name": "Планирование и анализ",
+                "estimated_hours": 30,
+                "work_packages": [
+                  {
+                    "name": "Уточнение сценариев",
+                    "requirement_ids": ["FR-10", "FR-11"],
+                    "tasks": [
+                      {
+                        "name": "Описать роли пользователей",
+                        "requirement_ids": ["FR-10"]
+                      },
+                      {
+                        "name": "Описать сценарии заявок",
+                        "requirement_ids": ["FR-11"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Разработка",
+                "estimated_hours": 170,
+                "work_packages": [
+                  {
+                    "name": "Личный кабинет",
+                    "requirement_ids": ["FR-10", "FR-11", "FR-12"],
+                    "tasks": [
+                      {
+                        "name": "Сделать профиль",
+                        "requirement_ids": ["FR-10"]
+                      },
+                      {
+                        "name": "Сделать заявки",
+                        "requirement_ids": ["FR-11"]
+                      },
+                      {
+                        "name": "Сделать уведомления",
+                        "requirement_ids": ["FR-12"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Тестирование",
+                "estimated_hours": 25,
+                "work_packages": [
+                  {
+                    "name": "Функциональные тесты",
+                    "requirement_ids": ["FR-10", "FR-11", "FR-12"],
+                    "tasks": [
+                      {
+                        "name": "Проверить профиль",
+                        "requirement_ids": ["FR-10"]
+                      },
+                      {
+                        "name": "Проверить заявки",
+                        "requirement_ids": ["FR-11"]
+                      },
+                      {
+                        "name": "Проверить уведомления",
+                        "requirement_ids": ["FR-12"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Развертывание",
+                "estimated_hours": 15,
+                "work_packages": [
+                  {
+                    "name": "Публикация",
+                    "requirement_ids": ["FR-10", "FR-11", "FR-12"],
+                    "tasks": [
+                      {
+                        "name": "Подготовить релиз",
+                        "requirement_ids": ["FR-10", "FR-11", "FR-12"]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "metadata": {
+          "min_confidence_score": 0.75,
+          "requirements_coverage": {
+            "total": 3,
+            "covered": 3,
+            "covered_by_ids": 3,
+            "covered_by_name_fallback": 0,
+            "uncovered": [],
+            "coverage_matrix": [
+              {
+                "requirement_id": "FR-10",
+                "requirement_name": "Профиль",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              },
+              {
+                "requirement_id": "FR-11",
+                "requirement_name": "Заявки",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              },
+              {
+                "requirement_id": "FR-12",
+                "requirement_name": "Уведомления",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              }
+            ]
+          }
+        },
+        "validation": {
+          "confidence_score": 0.81
+        }
+      }
+    },
+    {
+      "case_id": "analytics-dashboard-demo",
+      "expected": {
+        "project_type": "Веб-приложение",
+        "complexity_level": "Низкий",
+        "total_hours_range": [100, 180],
+        "required_requirement_ids": ["FR-21", "FR-22"],
+        "required_phase_names": ["Разработка", "Тестирование", "Развертывание"],
+        "min_confidence_score": 0.7,
+        "min_total_score": 75
+      },
+      "result": {
+        "result": {
+          "project_info": {
+            "project_name": "Analytics Dashboard",
+            "project_type": "Веб-приложение",
+            "complexity_level": "Низкий",
+            "total_estimated_hours": 140
+          },
+          "wbs": {
+            "phases": [
+              {
+                "name": "Разработка",
+                "estimated_hours": 90,
+                "work_packages": [
+                  {
+                    "name": "Дашборд и фильтры",
+                    "requirement_ids": ["FR-21", "FR-22"],
+                    "tasks": [
+                      {
+                        "name": "Сделать экран метрик",
+                        "requirement_ids": ["FR-21"]
+                      },
+                      {
+                        "name": "Сделать фильтры по периодам",
+                        "requirement_ids": ["FR-22"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Тестирование",
+                "estimated_hours": 30,
+                "work_packages": [
+                  {
+                    "name": "Проверка дашборда",
+                    "requirement_ids": ["FR-21", "FR-22"],
+                    "tasks": [
+                      {
+                        "name": "Проверить рендер метрик",
+                        "requirement_ids": ["FR-21"]
+                      },
+                      {
+                        "name": "Проверить фильтры",
+                        "requirement_ids": ["FR-22"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Развертывание",
+                "estimated_hours": 20,
+                "work_packages": [
+                  {
+                    "name": "Публикация панели",
+                    "requirement_ids": ["FR-21", "FR-22"],
+                    "tasks": [
+                      {
+                        "name": "Подготовить конфигурацию прод",
+                        "requirement_ids": ["FR-21", "FR-22"]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "validation": {
+          "confidence_score": 0.76
+        }
+      }
+    }
+  ]
+}

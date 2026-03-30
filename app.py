@@ -38,6 +38,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _client_filename(uploaded_name: str) -> str:
+    """Return the browser-supplied filename without any path segments."""
+    return str(uploaded_name or "").replace("\\", "/").split("/")[-1].strip()
+
+
+def _prepare_upload_filenames(uploaded_name: str) -> tuple[str, str]:
+    """Return the display filename and a filesystem-safe filename with preserved extension."""
+    original_name = _client_filename(uploaded_name)
+    original_path = Path(original_name)
+    extension = original_path.suffix.lower()
+    safe_stem = secure_filename(original_path.stem).strip("._") or "upload"
+    safe_name = f"{safe_stem}{extension}" if extension else safe_stem
+    return original_name, safe_name
+
+
 def _close_uploaded_file(uploaded_file, request_id: str):
     """Close the upload stream promptly so background workers can reopen the file safely."""
     close = getattr(uploaded_file, 'close', None)
@@ -827,11 +842,11 @@ def create_app(config_class=Config):
         
         try:
             # Generate unique filename
-            filename = secure_filename(file.filename)
+            filename, safe_filename = _prepare_upload_filenames(file.filename)
             unique_id = str(uuid.uuid4())
             task_id = str(uuid.uuid4())[:12]
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            saved_filename = f"{timestamp}_{unique_id}_{filename}"
+            saved_filename = f"{timestamp}_{unique_id}_{safe_filename}"
             filepath, file_size = _save_uploaded_file(
                 file,
                 app.config['UPLOAD_FOLDER'],

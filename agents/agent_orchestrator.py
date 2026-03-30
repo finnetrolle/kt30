@@ -129,7 +129,7 @@ class AgentOrchestrator:
     
     def _check_requirements_coverage(self, analysis: Dict[str, Any],
                                       wbs: Dict[str, Any]) -> Dict[str, Any]:
-        """Check that all functional requirements from analysis are covered by WBS tasks.
+        """Check that all functional requirements are covered by explicit traceability.
         
         Args:
             analysis: Analysis result from Analyst Agent
@@ -138,53 +138,177 @@ class AgentOrchestrator:
         Returns:
             Coverage report dictionary
         """
-        # Extract FR names from analysis
         fr_list = analysis.get("functional_requirements", [])
-        fr_names = [fr.get("name", "").lower().strip() for fr in fr_list if fr.get("name")]
-        
-        if not fr_names:
-            return {"total": 0, "covered_count": 0, "uncovered": []}
-        
-        # Extract all task names from WBS
-        task_names = []
-        wp_names = []
+        if not fr_list:
+            return {
+                "total": 0,
+                "covered_count": 0,
+                "covered_count_by_ids": 0,
+                "covered_count_by_name_fallback": 0,
+                "uncovered": [],
+                "uncovered_ids": [],
+                "coverage_matrix": []
+            }
+
+        all_wbs_names: List[str] = []
+        requirement_map: Dict[str, Dict[str, Any]] = {}
+
         for phase in wbs.get("wbs", {}).get("phases", []):
+            phase_name = str(phase.get("name", "")).strip()
             for wp in phase.get("work_packages", []):
-                wp_names.append(wp.get("name", "").lower().strip())
+                wp_id = str(wp.get("id", "")).strip()
+                wp_name = str(wp.get("name", "")).strip()
+                if wp_name:
+                    all_wbs_names.append(wp_name.lower())
+
+                wp_requirement_ids = {
+                    str(req_id).strip()
+                    for req_id in wp.get("requirement_ids", []) or []
+                    if str(req_id).strip()
+                }
+                for requirement_id in wp_requirement_ids:
+                    entry = requirement_map.setdefault(
+                        requirement_id,
+                        {"work_packages": [], "tasks": []}
+                    )
+                    entry["work_packages"].append({
+                        "id": wp_id,
+                        "name": wp_name,
+                        "phase": phase_name
+                    })
+
                 for task in wp.get("tasks", []):
-                    task_names.append(task.get("name", "").lower().strip())
-        
-        all_wbs_names = " ".join(task_names + wp_names)
-        
-        # Check coverage using keyword matching
+                    task_id = str(task.get("id", "")).strip()
+                    task_name = str(task.get("name", "")).strip()
+                    if task_name:
+                        all_wbs_names.append(task_name.lower())
+
+                    task_requirement_ids = {
+                        str(req_id).strip()
+                        for req_id in task.get("requirement_ids", []) or []
+                        if str(req_id).strip()
+                    }
+                    for requirement_id in task_requirement_ids:
+                        entry = requirement_map.setdefault(
+                            requirement_id,
+                            {"work_packages": [], "tasks": []}
+                        )
+                        entry["tasks"].append({
+                            "id": task_id,
+                            "name": task_name,
+                            "work_package_id": wp_id,
+                            "work_package_name": wp_name,
+                            "phase": phase_name
+                        })
+
+        all_wbs_text = " ".join(all_wbs_names)
+
         uncovered = []
+        uncovered_ids = []
         covered_count = 0
-        
+        covered_count_by_ids = 0
+        covered_count_by_name_fallback = 0
+        coverage_matrix = []
+
         for fr in fr_list:
+            requirement_id = str(fr.get("id", "")).strip()
             fr_name = fr.get("name", "").strip()
             fr_name_lower = fr_name.lower()
-            
-            # Check if any significant keywords from FR name appear in WBS tasks
             keywords = [w for w in fr_name_lower.split() if len(w) > 3]
-            
-            if not keywords:
-                covered_count += 1
-                continue
-            
-            # FR is covered if at least half of its keywords appear in WBS
-            matched_keywords = sum(1 for kw in keywords if kw in all_wbs_names)
+
+            traceability = requirement_map.get(
+                requirement_id,
+                {"work_packages": [], "tasks": []}
+            )
+            covered_by_ids = bool(traceability["work_packages"] or traceability["tasks"])
+
+            matched_keywords = sum(1 for kw in keywords if kw in all_wbs_text)
             coverage_ratio = matched_keywords / len(keywords) if keywords else 0
-            
-            if coverage_ratio >= 0.5:
+            covered_by_name_fallback = (not covered_by_ids) and (
+                not keywords or coverage_ratio >= 0.5
+            )
+
+            if covered_by_ids or covered_by_name_fallback:
                 covered_count += 1
+                if covered_by_ids:
+                    covered_count_by_ids += 1
+                else:
+                    covered_count_by_name_fallback += 1
             else:
                 uncovered.append(fr_name)
-        
+                if requirement_id:
+                    uncovered_ids.append(requirement_id)
+
+            coverage_matrix.append({
+                "requirement_id": requirement_id,
+                "requirement_name": fr_name,
+                "covered": covered_by_ids or covered_by_name_fallback,
+                "covered_by_ids": covered_by_ids,
+                "covered_by_name_fallback": covered_by_name_fallback,
+                "work_packages": traceability["work_packages"],
+                "tasks": traceability["tasks"]
+            })
+
         return {
             "total": len(fr_list),
             "covered_count": covered_count,
-            "uncovered": uncovered
+            "covered_count_by_ids": covered_count_by_ids,
+            "covered_count_by_name_fallback": covered_count_by_name_fallback,
+            "uncovered": uncovered,
+            "uncovered_ids": uncovered_ids,
+            "coverage_matrix": coverage_matrix
         }
+
+    def _validation_feedback_items(self, validation_result: Optional[ValidationResult], limit: int = 6) -> List[str]:
+        """Convert validation issues and warnings into compact feedback lines."""
+        if not validation_result:
+            return []
+
+        items: List[str] = []
+        for issue in validation_result.issues[:limit]:
+            location = issue.get("location", "unknown")
+            message = issue.get("message", "validation issue")
+            items.append(f"{location}: {message}")
+
+        remaining_slots = max(0, limit - len(items))
+        if remaining_slots:
+            for warning in validation_result.warnings[:remaining_slots]:
+                location = warning.get("location", "unknown")
+                message = warning.get("message", "validation warning")
+                items.append(f"{location}: {message}")
+
+        return items
+
+    def _build_quality_feedback(
+        self,
+        coverage_result: Dict[str, Any],
+        validation_result: Optional[ValidationResult],
+        min_confidence_score: float
+    ) -> str:
+        """Build a targeted refinement prompt for low-confidence outputs."""
+        feedback_parts: List[str] = []
+
+        uncovered = coverage_result.get("uncovered", [])
+        if uncovered:
+            feedback_parts.append(
+                "Явно покрой следующие функциональные требования через requirement_ids "
+                f"и связанные задачи: {', '.join(uncovered[:10])}."
+            )
+
+        validation_feedback = self._validation_feedback_items(validation_result)
+        if validation_feedback:
+            feedback_parts.append(
+                "Исправь замечания валидатора: " + "; ".join(validation_feedback) + "."
+            )
+
+        if validation_result and validation_result.confidence_score < min_confidence_score:
+            feedback_parts.append(
+                f"Повысь confidence результата минимум до {min_confidence_score:.2f}. "
+                "Особенно проверь реалистичность total hours, баланс фаз, зависимости, "
+                "deliverables и полноту декомпозиции."
+            )
+
+        return " ".join(feedback_parts)
     
     def generate_wbs(self, document_content: str,
                      max_iterations: int = 2,
@@ -388,6 +512,7 @@ class AgentOrchestrator:
             self._progress.stage("📋 Этап 5/6: Проверка покрытия требований")
         
         coverage_result = self._check_requirements_coverage(analysis, wbs)
+        quality_refinement_iterations = 0
         if coverage_result["uncovered"]:
             logger.info(f"\n📋 Непокрытые требования: {len(coverage_result['uncovered'])}")
             for fr in coverage_result["uncovered"]:
@@ -400,6 +525,8 @@ class AgentOrchestrator:
             self._log_conversation("Orchestrator", "coverage_check", {
                 "total_requirements": coverage_result["total"],
                 "covered": coverage_result["covered_count"],
+                "covered_by_ids": coverage_result["covered_count_by_ids"],
+                "covered_by_name_fallback": coverage_result["covered_count_by_name_fallback"],
                 "uncovered": coverage_result["uncovered"]
             })
             
@@ -417,19 +544,24 @@ class AgentOrchestrator:
                 wbs_result = self.planner.refine_wbs(wbs, feedback)
                 if wbs_result.get("success"):
                     wbs = wbs_result["wbs"]
+                    coverage_result = self._check_requirements_coverage(analysis, wbs)
                     self.event_logger.log_agent_completed(
                         self.planner.name,
                         f"WBS дополнен задачами для {len(coverage_result['uncovered'])} требований"
                     )
         else:
-            logger.info("✅ Все функциональные требования покрыты задачами в WBS")
+            logger.info("✅ Все функциональные требования покрыты в WBS")
             if self._progress:
                 self._progress.info(
-                    f"✅ Все {coverage_result['total']} функциональных требований покрыты задачами в WBS"
+                    f"✅ Все {coverage_result['total']} функциональных требований покрыты в WBS. "
+                    f"Явная трассировка: {coverage_result['covered_count_by_ids']}, "
+                    f"fallback по названиям: {coverage_result['covered_count_by_name_fallback']}"
                 )
             self._log_conversation("Orchestrator", "coverage_check", {
                 "total_requirements": coverage_result["total"],
                 "covered_count": coverage_result["covered_count"],
+                "covered_by_ids": coverage_result["covered_count_by_ids"],
+                "covered_by_name_fallback": coverage_result["covered_count_by_name_fallback"],
                 "status": "all_covered"
             })
         
@@ -440,6 +572,11 @@ class AgentOrchestrator:
             self._progress.stage("✅ Этап 6/6: Финальная валидация и нормализация")
         
         validation_result = None
+        settings = self.estimation_rules.rules.get("stabilization_settings", {})
+        min_confidence_score = Config.get_stabilization_config().get(
+            "min_confidence_score",
+            settings.get("min_confidence_score", 0.7)
+        )
         if mode in [StabilizationMode.VALIDATE, StabilizationMode.ENSEMBLE_VALIDATE]:
             self.event_logger.log_agent_started(
                 self.validator.name,
@@ -455,12 +592,82 @@ class AgentOrchestrator:
                 "confidence_score": validation_result.confidence_score
             })
             
+            while quality_refinement_iterations < max_iterations:
+                needs_quality_refinement = (
+                    bool(coverage_result["uncovered"]) or
+                    not validation_result.is_valid or
+                    validation_result.confidence_score < min_confidence_score
+                )
+                if not needs_quality_refinement:
+                    break
+
+                feedback = self._build_quality_feedback(
+                    coverage_result,
+                    validation_result,
+                    min_confidence_score
+                )
+                if not feedback:
+                    break
+
+                quality_refinement_iterations += 1
+                self._log_conversation("Orchestrator", "quality_gate_triggered", {
+                    "quality_iteration": quality_refinement_iterations,
+                    "confidence_score": validation_result.confidence_score,
+                    "min_confidence_score": min_confidence_score,
+                    "uncovered_requirements": len(coverage_result["uncovered"]),
+                    "issues_count": len(validation_result.issues),
+                    "warnings_count": len(validation_result.warnings)
+                })
+                if self._progress:
+                    self._progress.info(
+                        f"🔁 Дополнительное уточнение WBS по quality gate "
+                        f"{quality_refinement_iterations}/{max_iterations}"
+                    )
+
+                self.event_logger.log_agent_started(
+                    self.planner.name,
+                    f"Качественное уточнение WBS (итерация {quality_refinement_iterations})"
+                )
+
+                wbs_result = self.planner.refine_wbs(wbs, feedback)
+                if not wbs_result.get("success"):
+                    error = wbs_result.get("error", "Quality refinement failed")
+                    self.event_logger.log_agent_error(self.planner.name, error)
+                    self._log_conversation("Planner", "quality_refinement_failed", {
+                        "quality_iteration": quality_refinement_iterations,
+                        "error": error
+                    })
+                    break
+
+                wbs = wbs_result["wbs"]
+                coverage_result = self._check_requirements_coverage(analysis, wbs)
+                validation_result = self.validator.validate_wbs(wbs)
+                self.event_logger.log_agent_completed(
+                    self.planner.name,
+                    f"Качественное уточнение выполнено (итерация {quality_refinement_iterations})"
+                )
+                self._log_conversation("Planner", "quality_refinement_complete", {
+                    "quality_iteration": quality_refinement_iterations,
+                    "covered_count": coverage_result["covered_count"],
+                    "uncovered_count": len(coverage_result["uncovered"]),
+                    "confidence_score": validation_result.confidence_score
+                })
+                self._log_conversation("Validator", "validation_complete", {
+                    "is_valid": validation_result.is_valid,
+                    "issues_count": len(validation_result.issues),
+                    "warnings_count": len(validation_result.warnings),
+                    "confidence_score": validation_result.confidence_score,
+                    "quality_iteration": quality_refinement_iterations
+                })
+
             # Normalize if auto_normalize is enabled
-            settings = self.estimation_rules.rules.get("stabilization_settings", {})
             if settings.get("auto_normalize", True):
                 wbs = self.validator.normalize_wbs(wbs)
+                coverage_result = self._check_requirements_coverage(analysis, wbs)
+                validation_result = self.validator.validate_wbs(wbs)
                 self._log_conversation("Validator", "wbs_normalized", {
-                    "corrections": len(validation_result.corrections)
+                    "corrections": len(validation_result.corrections),
+                    "confidence_score": validation_result.confidence_score
                 })
             
             # LLM-based semantic validation
@@ -478,6 +685,18 @@ class AgentOrchestrator:
                     logger.warning(f"⚠️ LLM-валидация пропущена из-за ошибки: {e}")
             else:
                 logger.info("ℹ️ LLM-валидация отключена текущим профилем модели")
+
+            if validation_result.confidence_score < min_confidence_score:
+                logger.warning(
+                    "⚠️ Финальный confidence %.2f ниже порога %.2f",
+                    validation_result.confidence_score,
+                    min_confidence_score
+                )
+                if self._progress:
+                    self._progress.info(
+                        f"⚠️ Финальный confidence {validation_result.confidence_score:.2f} "
+                        f"ниже целевого порога {min_confidence_score:.2f}"
+                    )
             
             self.event_logger.log_agent_completed(
                 self.validator.name,
@@ -502,6 +721,7 @@ class AgentOrchestrator:
         logger.info("🏁 МУЛЬТИ-АГЕНТНАЯ ГЕНЕРАЦИЯ ЗАВЕРШЕНА")
         logger.info(f"   Общее время: {elapsed_time:.2f} сек")
         logger.info(f"   Итерации: {iteration + 1}")
+        logger.info(f"   Quality refinement iterations: {quality_refinement_iterations}")
         logger.info(f"   Фаз в WBS: {len(wbs.get('wbs', {}).get('phases', []))}")
         if validation_result:
             logger.info(f"   Confidence: {validation_result.confidence_score:.2f}")
@@ -522,6 +742,7 @@ class AgentOrchestrator:
             "metadata": {
                 "elapsed_seconds": round(elapsed_time, 2),
                 "iterations": iteration + 1,
+                "quality_refinement_iterations": quality_refinement_iterations,
                 "stabilization_mode": mode,
                 "llm_profile": Config.LLM_PROFILE,
                 "analysis_summary": {
@@ -538,8 +759,13 @@ class AgentOrchestrator:
                 "requirements_coverage": {
                     "total": coverage_result["total"],
                     "covered": coverage_result["covered_count"],
-                    "uncovered": coverage_result["uncovered"]
+                    "covered_by_ids": coverage_result["covered_count_by_ids"],
+                    "covered_by_name_fallback": coverage_result["covered_count_by_name_fallback"],
+                    "uncovered": coverage_result["uncovered"],
+                    "uncovered_ids": coverage_result["uncovered_ids"],
+                    "coverage_matrix": coverage_result["coverage_matrix"]
                 },
+                "min_confidence_score": min_confidence_score,
                 "analysis_pipeline": analysis_pipeline_metadata,
                 "planning_pipeline": planning_pipeline_metadata,
                 "token_usage": token_usage

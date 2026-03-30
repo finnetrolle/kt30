@@ -47,10 +47,13 @@ def _load_estimation_rules_from_file() -> Dict[str, Any]:
             "task_templates": flat_templates,
             "phase_ratios": phase_ratios,
             "complexity_multipliers": complexity,
+            "project_type_baselines": full_rules.get("project_type_baselines", {}),
             "min_hours_per_task": limits.get("min_hours_per_task", 2),
             "max_hours_per_task": limits.get("max_hours_per_task", 80),
             "min_hours_per_phase": limits.get("min_hours_per_phase", 8),
             "max_hours_per_phase": limits.get("max_hours_per_phase", 500),
+            "min_total_hours": limits.get("min_total_hours", 40),
+            "max_total_hours": limits.get("max_total_hours", 5000),
         }
     except (FileNotFoundError, json.JSONDecodeError) as e:
         logger.warning(f"Could not load estimation rules from file: {e}, using defaults")
@@ -58,10 +61,13 @@ def _load_estimation_rules_from_file() -> Dict[str, Any]:
             "task_templates": {},
             "phase_ratios": {},
             "complexity_multipliers": {"Низкий": 0.7, "Средний": 1.0, "Высокий": 1.4},
+            "project_type_baselines": {},
             "min_hours_per_task": 2,
             "max_hours_per_task": 80,
             "min_hours_per_phase": 8,
             "max_hours_per_phase": 500,
+            "min_total_hours": 40,
+            "max_total_hours": 5000,
         }
 
 
@@ -369,20 +375,65 @@ class ValidatorAgent(BaseAgent):
         if not project_info.get('total_estimated_hours'):
             result.add_warning("completeness", "Missing total estimated hours", location)
         
+        project_type = project_info.get('project_type', '')
+        if not project_type:
+            result.add_warning("completeness", "Missing project type", location)
+        elif self.estimation_rules.get('project_type_baselines') and project_type not in self.estimation_rules['project_type_baselines']:
+            result.add_warning("estimation", 
+                             f"Unknown project type: {project_type}", location)
+
         complexity = project_info.get('complexity_level', 'Средний')
         if complexity not in self.estimation_rules['complexity_multipliers']:
             result.add_warning("estimation", 
                              f"Unknown complexity level: {complexity}", location)
     
+    def _calculate_actual_total_hours(self, wbs: Dict[str, Any]) -> float:
+        """Calculate the total hours from phases."""
+        total = 0.0
+        for phase in wbs.get('wbs', {}).get('phases', []):
+            total += self._coerce_to_number(phase.get('estimated_hours', 0))
+        return total
+
+    def _expected_total_hours_range(
+        self,
+        project_info: Dict[str, Any]
+    ) -> Optional[Tuple[int, int, int]]:
+        """Return the expected total-hour range for the project type and complexity."""
+        baselines = self.estimation_rules.get('project_type_baselines', {})
+        project_type = project_info.get('project_type')
+        if not project_type or project_type not in baselines:
+            return None
+
+        baseline_info = baselines.get(project_type, {})
+        baseline_hours = self._coerce_to_number(baseline_info.get('baseline_hours', 0))
+        range_hours = baseline_info.get('range_hours', []) or []
+        if len(range_hours) >= 2:
+            min_hours = self._coerce_to_number(range_hours[0], baseline_hours or 0)
+            max_hours = self._coerce_to_number(range_hours[1], baseline_hours or 0)
+        elif baseline_hours > 0:
+            min_hours = baseline_hours * 0.7
+            max_hours = baseline_hours * 1.3
+        else:
+            return None
+
+        complexity = project_info.get('complexity_level', 'Средний')
+        complexity_multiplier = self.estimation_rules['complexity_multipliers'].get(complexity, 1.0)
+        adjusted_min = round(max(self.estimation_rules.get('min_total_hours', 40), min_hours * complexity_multiplier))
+        adjusted_max = round(min(self.estimation_rules.get('max_total_hours', 5000), max_hours * complexity_multiplier))
+        adjusted_baseline = round(baseline_hours * complexity_multiplier) if baseline_hours > 0 else round((adjusted_min + adjusted_max) / 2)
+
+        if adjusted_min > adjusted_max:
+            adjusted_min, adjusted_max = adjusted_max, adjusted_min
+
+        return adjusted_min, adjusted_max, adjusted_baseline
+
     def _validate_total_hours(self, wbs: Dict[str, Any], result: ValidationResult):
         """Validate total hours consistency."""
-        declared_total = wbs.get('project_info', {}).get('total_estimated_hours', 0)
+        project_info = wbs.get('project_info', {})
+        declared_total = self._coerce_to_number(project_info.get('total_estimated_hours', 0))
         
         # Calculate actual sum
-        actual_total = 0
-        phases = wbs.get('wbs', {}).get('phases', [])
-        for phase in phases:
-            actual_total += phase.get('estimated_hours', 0)
+        actual_total = self._calculate_actual_total_hours(wbs)
         
         if declared_total > 0 and actual_total > 0:
             diff_ratio = abs(declared_total - actual_total) / max(declared_total, 1)
@@ -390,6 +441,51 @@ class ValidatorAgent(BaseAgent):
                 result.add_warning("estimation",
                     f"Declared total ({declared_total}) differs from sum of phases ({actual_total})",
                     "project_info")
+
+        min_total = self.estimation_rules.get('min_total_hours', 40)
+        max_total = self.estimation_rules.get('max_total_hours', 5000)
+        total_for_rules = actual_total or declared_total
+        if total_for_rules > 0:
+            if total_for_rules < min_total:
+                result.add_warning(
+                    "estimation",
+                    f"Total hours ({round(total_for_rules)}) below minimum project threshold ({min_total})",
+                    "project_info"
+                )
+            elif total_for_rules > max_total:
+                result.add_issue(
+                    "estimation",
+                    f"Total hours ({round(total_for_rules)}) exceed maximum project threshold ({max_total})",
+                    "project_info",
+                    current_value=round(total_for_rules),
+                    suggested_value=max_total
+                )
+
+        expected_range = self._expected_total_hours_range(project_info)
+        if expected_range and total_for_rules > 0:
+            expected_min, expected_max, expected_baseline = expected_range
+            if total_for_rules < expected_min or total_for_rules > expected_max:
+                project_type = project_info.get('project_type', 'unknown')
+                complexity = project_info.get('complexity_level', 'Средний')
+                message = (
+                    f"Total hours ({round(total_for_rules)}) outside expected range for "
+                    f"'{project_type}' with complexity '{complexity}' ({expected_min}-{expected_max})"
+                )
+                if total_for_rules < expected_min:
+                    gap_ratio = (expected_min - total_for_rules) / max(expected_min, 1)
+                else:
+                    gap_ratio = (total_for_rules - expected_max) / max(expected_max, 1)
+
+                if gap_ratio >= 0.35:
+                    result.add_issue(
+                        "estimation",
+                        message,
+                        "project_info",
+                        current_value=round(total_for_rules),
+                        suggested_value=expected_baseline
+                    )
+                else:
+                    result.add_warning("estimation", message, "project_info")
     
     def _calculate_confidence(self, result: ValidationResult, 
                               wbs: Dict[str, Any]) -> float:
@@ -413,6 +509,18 @@ class ValidatorAgent(BaseAgent):
         
         if total_tasks < 5:
             base_score -= 0.1
+
+        project_info = wbs.get('project_info', {})
+        total_hours = self._calculate_actual_total_hours(wbs) or self._coerce_to_number(
+            project_info.get('total_estimated_hours', 0)
+        )
+        expected_range = self._expected_total_hours_range(project_info)
+        if expected_range and total_hours > 0:
+            expected_min, expected_max, _ = expected_range
+            if total_hours < expected_min:
+                base_score -= min(0.25, ((expected_min - total_hours) / max(expected_min, 1)) * 0.35)
+            elif total_hours > expected_max:
+                base_score -= min(0.25, ((total_hours - expected_max) / max(expected_max, 1)) * 0.35)
         
         return max(0.0, min(1.0, base_score))
     

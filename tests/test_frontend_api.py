@@ -209,13 +209,37 @@ class FrontendApiTests(unittest.TestCase):
 
         job = self.job_queue.get(payload["task_id"])
         self.assertIsNotNone(job)
+        self.assertEqual(job["payload"]["filename"], "ТЗ 4. - .docx")
         self.assertTrue(os.path.isabs(job["payload"]["filepath"]))
         self.assertIn("/analysis_runs/", job["payload"]["filepath"])
-        self.assertTrue(job["payload"]["filepath"].endswith("/source/4._-_.docx"))
+        self.assertTrue(job["payload"]["filepath"].endswith("/source/4._-.docx"))
         self.assertTrue(os.path.isabs(job["payload"]["upload_filepath"]))
         self.assertIn("/uploads/", job["payload"]["upload_filepath"])
+        self.assertEqual(Path(job["payload"]["upload_filepath"]).suffix, ".docx")
         self.assertTrue(os.path.exists(job["payload"]["filepath"]))
         close_mock.assert_called()
+
+    def test_api_upload_preserves_pdf_extension_for_unicode_filename(self):
+        response = self.client.post(
+            "/api/uploads",
+            data={
+                "file": (io.BytesIO(b"%PDF-1.7\n%stub pdf payload"), "ТЗ.pdf")
+            },
+            content_type="multipart/form-data",
+            headers={"X-CSRF-Token": self._csrf_token()}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["success"])
+        self.assertTrue(payload["task_id"])
+
+        job = self.job_queue.get(payload["task_id"])
+        self.assertIsNotNone(job)
+        self.assertEqual(job["payload"]["filename"], "ТЗ.pdf")
+        self.assertEqual(Path(job["payload"]["upload_filepath"]).suffix, ".pdf")
+        self.assertEqual(Path(job["payload"]["filepath"]).suffix, ".pdf")
+        self.assertTrue(job["payload"]["filepath"].endswith("/source/upload.pdf"))
 
     def test_api_progress_alias_streams_existing_events(self):
         tracker = self.progress_store.create("task-1")

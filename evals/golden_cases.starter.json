@@ -1,0 +1,674 @@
+{
+  "cases": [
+    {
+      "case_id": "payments-api-demo",
+      "expected": {
+        "project_type": "API сервис",
+        "complexity_level": "Высокий",
+        "total_hours_range": [120, 560],
+        "required_requirement_ids": ["FR-1", "FR-2"],
+        "required_phase_names": ["Разработка", "Тестирование"],
+        "min_confidence_score": 0.7,
+        "min_total_score": 75
+      },
+      "result": {
+        "result": {
+          "project_info": {
+            "project_name": "Payments API",
+            "project_type": "API сервис",
+            "complexity_level": "Высокий",
+            "total_estimated_hours": 320
+          },
+          "wbs": {
+            "phases": [
+              {
+                "name": "Разработка",
+                "estimated_hours": 200,
+                "work_packages": [
+                  {
+                    "name": "API логика",
+                    "requirement_ids": ["FR-1", "FR-2"],
+                    "tasks": [
+                      {
+                        "name": "Реализовать аутентификацию",
+                        "requirement_ids": ["FR-1"]
+                      },
+                      {
+                        "name": "Добавить аудит операций",
+                        "requirement_ids": ["FR-2"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Тестирование",
+                "estimated_hours": 120,
+                "work_packages": [
+                  {
+                    "name": "Проверка API",
+                    "requirement_ids": ["FR-1", "FR-2"],
+                    "tasks": [
+                      {
+                        "name": "Проверить сценарии безопасности",
+                        "requirement_ids": ["FR-1"]
+                      },
+                      {
+                        "name": "Проверить аудит",
+                        "requirement_ids": ["FR-2"]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "metadata": {
+          "min_confidence_score": 0.7,
+          "requirements_coverage": {
+            "total": 2,
+            "covered": 2,
+            "covered_by_ids": 2,
+            "covered_by_name_fallback": 0,
+            "uncovered": [],
+            "coverage_matrix": [
+              {
+                "requirement_id": "FR-1",
+                "requirement_name": "Аутентификация",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              },
+              {
+                "requirement_id": "FR-2",
+                "requirement_name": "Аудит операций",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              }
+            ]
+          }
+        },
+        "validation": {
+          "confidence_score": 0.82
+        }
+      },
+      "notes": [
+        "Synthetic starter case for API-oriented projects."
+      ]
+    },
+    {
+      "case_id": "customer-portal-demo",
+      "expected": {
+        "project_type": "Веб-приложение",
+        "complexity_level": "Средний",
+        "total_hours_range": [180, 320],
+        "required_requirement_ids": ["FR-10", "FR-11", "FR-12"],
+        "required_phase_names": ["Планирование и анализ", "Разработка", "Тестирование", "Развертывание"],
+        "min_confidence_score": 0.75,
+        "min_total_score": 75
+      },
+      "result": {
+        "result": {
+          "project_info": {
+            "project_name": "Customer Portal",
+            "project_type": "Веб-приложение",
+            "complexity_level": "Средний",
+            "total_estimated_hours": 240
+          },
+          "wbs": {
+            "phases": [
+              {
+                "name": "Планирование и анализ",
+                "estimated_hours": 30,
+                "work_packages": [
+                  {
+                    "name": "Уточнение сценариев",
+                    "requirement_ids": ["FR-10", "FR-11"],
+                    "tasks": [
+                      {
+                        "name": "Описать роли пользователей",
+                        "requirement_ids": ["FR-10"]
+                      },
+                      {
+                        "name": "Описать сценарии заявок",
+                        "requirement_ids": ["FR-11"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Разработка",
+                "estimated_hours": 170,
+                "work_packages": [
+                  {
+                    "name": "Личный кабинет",
+                    "requirement_ids": ["FR-10", "FR-11", "FR-12"],
+                    "tasks": [
+                      {
+                        "name": "Сделать профиль",
+                        "requirement_ids": ["FR-10"]
+                      },
+                      {
+                        "name": "Сделать заявки",
+                        "requirement_ids": ["FR-11"]
+                      },
+                      {
+                        "name": "Сделать уведомления",
+                        "requirement_ids": ["FR-12"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Тестирование",
+                "estimated_hours": 25,
+                "work_packages": [
+                  {
+                    "name": "Функциональные тесты",
+                    "requirement_ids": ["FR-10", "FR-11", "FR-12"],
+                    "tasks": [
+                      {
+                        "name": "Проверить профиль",
+                        "requirement_ids": ["FR-10"]
+                      },
+                      {
+                        "name": "Проверить заявки",
+                        "requirement_ids": ["FR-11"]
+                      },
+                      {
+                        "name": "Проверить уведомления",
+                        "requirement_ids": ["FR-12"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Развертывание",
+                "estimated_hours": 15,
+                "work_packages": [
+                  {
+                    "name": "Публикация",
+                    "requirement_ids": ["FR-10", "FR-11", "FR-12"],
+                    "tasks": [
+                      {
+                        "name": "Подготовить релиз",
+                        "requirement_ids": ["FR-10", "FR-11", "FR-12"]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "metadata": {
+          "min_confidence_score": 0.75,
+          "requirements_coverage": {
+            "total": 3,
+            "covered": 3,
+            "covered_by_ids": 3,
+            "covered_by_name_fallback": 0,
+            "uncovered": [],
+            "coverage_matrix": [
+              {
+                "requirement_id": "FR-10",
+                "requirement_name": "Профиль",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              },
+              {
+                "requirement_id": "FR-11",
+                "requirement_name": "Заявки",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              },
+              {
+                "requirement_id": "FR-12",
+                "requirement_name": "Уведомления",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              }
+            ]
+          }
+        },
+        "validation": {
+          "confidence_score": 0.81
+        }
+      },
+      "notes": [
+        "Synthetic starter case for medium web applications."
+      ]
+    },
+    {
+      "case_id": "analytics-dashboard-demo",
+      "expected": {
+        "project_type": "Веб-приложение",
+        "complexity_level": "Низкий",
+        "total_hours_range": [100, 180],
+        "required_requirement_ids": ["FR-21", "FR-22"],
+        "required_phase_names": ["Разработка", "Тестирование", "Развертывание"],
+        "min_confidence_score": 0.7,
+        "min_total_score": 75
+      },
+      "result": {
+        "result": {
+          "project_info": {
+            "project_name": "Analytics Dashboard",
+            "project_type": "Веб-приложение",
+            "complexity_level": "Низкий",
+            "total_estimated_hours": 140
+          },
+          "wbs": {
+            "phases": [
+              {
+                "name": "Разработка",
+                "estimated_hours": 90,
+                "work_packages": [
+                  {
+                    "name": "Дашборд и фильтры",
+                    "requirement_ids": ["FR-21", "FR-22"],
+                    "tasks": [
+                      {
+                        "name": "Сделать экран метрик",
+                        "requirement_ids": ["FR-21"]
+                      },
+                      {
+                        "name": "Сделать фильтры по периодам",
+                        "requirement_ids": ["FR-22"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Тестирование",
+                "estimated_hours": 30,
+                "work_packages": [
+                  {
+                    "name": "Проверка дашборда",
+                    "requirement_ids": ["FR-21", "FR-22"],
+                    "tasks": [
+                      {
+                        "name": "Проверить рендер метрик",
+                        "requirement_ids": ["FR-21"]
+                      },
+                      {
+                        "name": "Проверить фильтры",
+                        "requirement_ids": ["FR-22"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Развертывание",
+                "estimated_hours": 20,
+                "work_packages": [
+                  {
+                    "name": "Публикация панели",
+                    "requirement_ids": ["FR-21", "FR-22"],
+                    "tasks": [
+                      {
+                        "name": "Подготовить конфигурацию прод",
+                        "requirement_ids": ["FR-21", "FR-22"]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "validation": {
+          "confidence_score": 0.76
+        }
+      },
+      "notes": [
+        "Synthetic starter case for low-complexity dashboard delivery."
+      ]
+    },
+    {
+      "case_id": "ai-kb-chatbot-rfp-real",
+      "source_file": "../uploads/20260213_165118_21e5fc03-2b1c-454c-9011-21f7e9e45206_AI_-_12012026.pdf",
+      "expected": {
+        "project_type": "Интеграция",
+        "complexity_level": "Высокий",
+        "total_hours_range": [480, 680],
+        "required_requirement_ids": ["FR-1", "FR-2", "FR-3", "FR-4", "FR-5", "FR-6"],
+        "required_phase_names": ["Планирование и анализ", "Проектирование", "Разработка", "Тестирование", "Развертывание"],
+        "min_confidence_score": 0.78,
+        "min_total_score": 80
+      },
+      "result": {
+        "result": {
+          "project_info": {
+            "project_name": "AI-чат-бот для базы знаний Teamly/Just AI",
+            "project_type": "Интеграция",
+            "complexity_level": "Высокий",
+            "description": "On-prem RAG-решение с интеграцией Teamly и Just AI, поддержкой vLLM и fallback-сценариев.",
+            "estimated_duration": "12-14 недель",
+            "total_estimated_hours": 560
+          },
+          "wbs": {
+            "phases": [
+              {
+                "name": "Планирование и анализ",
+                "estimated_hours": 72,
+                "work_packages": [
+                  {
+                    "name": "Уточнение ограничений решения и интеграционного контура",
+                    "requirement_ids": ["FR-1", "FR-3", "FR-6"],
+                    "tasks": [
+                      {
+                        "name": "Уточнить ограничения Just AI, Teamly API и on-prem контура",
+                        "requirement_ids": ["FR-1", "FR-3", "FR-6"]
+                      },
+                      {
+                        "name": "Согласовать список поддерживаемых LLM-моделей и требования к vLLM",
+                        "requirement_ids": ["FR-6"]
+                      },
+                      {
+                        "name": "Зафиксировать сценарии использования и границы данных",
+                        "requirement_ids": ["FR-3"]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "Критерии качества ответов и fallback-логика",
+                    "requirement_ids": ["FR-2", "FR-4", "FR-5"],
+                    "tasks": [
+                      {
+                        "name": "Определить критерии релевантности и confidence-score",
+                        "requirement_ids": ["FR-4"]
+                      },
+                      {
+                        "name": "Согласовать golden set и контрольные сценарии оценки",
+                        "requirement_ids": ["FR-2", "FR-4"]
+                      },
+                      {
+                        "name": "Зафиксировать требования к обновлению индексов при изменении статей",
+                        "requirement_ids": ["FR-5"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Проектирование",
+                "estimated_hours": 96,
+                "work_packages": [
+                  {
+                    "name": "Целевая архитектура RAG-решения",
+                    "requirement_ids": ["FR-1", "FR-2", "FR-3", "FR-6"],
+                    "tasks": [
+                      {
+                        "name": "Спроектировать разделение integration, retrieval и inference слоев",
+                        "requirement_ids": ["FR-1", "FR-2", "FR-6"]
+                      },
+                      {
+                        "name": "Спроектировать контракт взаимодействия с Just AI",
+                        "requirement_ids": ["FR-3"]
+                      },
+                      {
+                        "name": "Спроектировать заменяемость моделей без переработки логики",
+                        "requirement_ids": ["FR-6"]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "Проектирование потоков данных Teamly и индексации",
+                    "requirement_ids": ["FR-1", "FR-5"],
+                    "tasks": [
+                      {
+                        "name": "Спроектировать извлечение контента, структуры и тегов из Teamly",
+                        "requirement_ids": ["FR-1"]
+                      },
+                      {
+                        "name": "Спроектировать процесс обновления и архивирования индексов",
+                        "requirement_ids": ["FR-5"]
+                      },
+                      {
+                        "name": "Спроектировать хранение метаданных и ссылок на источники",
+                        "requirement_ids": ["FR-1", "FR-5"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Разработка",
+                "estimated_hours": 264,
+                "work_packages": [
+                  {
+                    "name": "Интеграционный слой Teamly",
+                    "requirement_ids": ["FR-1", "FR-5"],
+                    "tasks": [
+                      {
+                        "name": "Реализовать загрузку статей, пространств и тегов через Teamly API",
+                        "requirement_ids": ["FR-1"]
+                      },
+                      {
+                        "name": "Реализовать обработку обновлений, удалений и архивирования статей",
+                        "requirement_ids": ["FR-5"]
+                      },
+                      {
+                        "name": "Реализовать передачу новых материалов в контур индексации",
+                        "requirement_ids": ["FR-1", "FR-5"]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "RAG-пайплайн и генерация ответа",
+                    "requirement_ids": ["FR-2", "FR-6"],
+                    "tasks": [
+                      {
+                        "name": "Реализовать retrieval и reranking по данным базы знаний",
+                        "requirement_ids": ["FR-2"]
+                      },
+                      {
+                        "name": "Реализовать жесткое ограничение контекста Teamly-источниками",
+                        "requirement_ids": ["FR-2"]
+                      },
+                      {
+                        "name": "Подключить on-prem LLM через vLLM и слой model routing",
+                        "requirement_ids": ["FR-6"]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "Интеграция с Just AI",
+                    "requirement_ids": ["FR-3"],
+                    "tasks": [
+                      {
+                        "name": "Реализовать REST/gRPC/webhook контракт для вызова AI-backend",
+                        "requirement_ids": ["FR-3"]
+                      },
+                      {
+                        "name": "Реализовать поддержку контекста диалога и session state",
+                        "requirement_ids": ["FR-3"]
+                      },
+                      {
+                        "name": "Обработать ограничения входного интерфейса Just AI",
+                        "requirement_ids": ["FR-3"]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "Оценка качества ответа и fallback-оркестрация",
+                    "requirement_ids": ["FR-4"],
+                    "tasks": [
+                      {
+                        "name": "Реализовать scoring ответа по golden set и эвристикам",
+                        "requirement_ids": ["FR-4"]
+                      },
+                      {
+                        "name": "Реализовать secondary-model или self-evaluation проверки",
+                        "requirement_ids": ["FR-4"]
+                      },
+                      {
+                        "name": "Реализовать fallback-сценарий при недостоверном ответе",
+                        "requirement_ids": ["FR-4"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Тестирование",
+                "estimated_hours": 88,
+                "work_packages": [
+                  {
+                    "name": "Интеграционные и функциональные проверки",
+                    "requirement_ids": ["FR-1", "FR-2", "FR-3", "FR-5"],
+                    "tasks": [
+                      {
+                        "name": "Проверить синхронизацию Teamly и корректность индексации",
+                        "requirement_ids": ["FR-1", "FR-5"]
+                      },
+                      {
+                        "name": "Проверить поиск, цитирование и ограничения контекста",
+                        "requirement_ids": ["FR-2"]
+                      },
+                      {
+                        "name": "Проверить интеграцию с Just AI и контекст диалога",
+                        "requirement_ids": ["FR-3"]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "Оценка качества ответа и отказоустойчивости",
+                    "requirement_ids": ["FR-2", "FR-4", "FR-6"],
+                    "tasks": [
+                      {
+                        "name": "Проверить пороги confidence-score и fallback-сценарии",
+                        "requirement_ids": ["FR-4"]
+                      },
+                      {
+                        "name": "Проверить поведение при деградации Teamly API и LLM",
+                        "requirement_ids": ["FR-2", "FR-6"]
+                      },
+                      {
+                        "name": "Проверить сценарии отсутствия релевантных данных в базе знаний",
+                        "requirement_ids": ["FR-2", "FR-4"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Развертывание",
+                "estimated_hours": 40,
+                "work_packages": [
+                  {
+                    "name": "On-prem внедрение и эксплуатационная подготовка",
+                    "requirement_ids": ["FR-1", "FR-3", "FR-6"],
+                    "tasks": [
+                      {
+                        "name": "Подготовить deployment-конфигурацию для on-prem кластера",
+                        "requirement_ids": ["FR-6"]
+                      },
+                      {
+                        "name": "Настроить маршруты интеграции Teamly и Just AI",
+                        "requirement_ids": ["FR-1", "FR-3"]
+                      },
+                      {
+                        "name": "Подготовить инструкции по эксплуатации и мониторингу",
+                        "requirement_ids": ["FR-1", "FR-6"]
+                      }
+                    ]
+                  },
+                  {
+                    "name": "Передача знаний заказчику",
+                    "requirement_ids": ["FR-4", "FR-5"],
+                    "tasks": [
+                      {
+                        "name": "Подготовить runbook по поддержке качества ответов",
+                        "requirement_ids": ["FR-4"]
+                      },
+                      {
+                        "name": "Подготовить runbook по обновлению индексов и контента",
+                        "requirement_ids": ["FR-5"]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "metadata": {
+          "min_confidence_score": 0.78,
+          "requirements_coverage": {
+            "total": 6,
+            "covered": 6,
+            "covered_by_ids": 6,
+            "covered_by_name_fallback": 0,
+            "uncovered": [],
+            "coverage_matrix": [
+              {
+                "requirement_id": "FR-1",
+                "requirement_name": "Интеграция с Teamly API и учет структуры KB",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              },
+              {
+                "requirement_id": "FR-2",
+                "requirement_name": "RAG-поиск и генерация ответа только по базе знаний",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              },
+              {
+                "requirement_id": "FR-3",
+                "requirement_name": "Интеграция с Just AI и поддержка контекста диалога",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              },
+              {
+                "requirement_id": "FR-4",
+                "requirement_name": "Оценка качества ответа и fallback при недостоверном ответе",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              },
+              {
+                "requirement_id": "FR-5",
+                "requirement_name": "Инкрементальное обновление индексов по изменениям Teamly",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              },
+              {
+                "requirement_id": "FR-6",
+                "requirement_name": "Поддержка on-prem LLM через vLLM без внешних облачных моделей",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              }
+            ]
+          }
+        },
+        "validation": {
+          "confidence_score": 0.84,
+          "issues": [],
+          "warnings": []
+        }
+      },
+      "notes": [
+        "Curated from the uploaded RFP PDF about an on-prem AI knowledge-base chatbot.",
+        "Hours range is intentionally tighter than a loose bootstrap draft and reflects integration-heavy delivery with QA and handover.",
+        "Critical requirements focus on Teamly, Just AI, on-prem LLM/vLLM, RAG grounding, answer quality scoring, and incremental indexing."
+      ]
+    }
+  ]
+}

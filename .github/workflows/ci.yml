@@ -24,12 +24,22 @@ jobs:
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
 
       - name: Compile Python sources
-        run: python -m compileall app.py config.py analysis_jobs.py job_queue.py job_worker.py rate_limiter.py worker.py ops tests
+        run: python -m compileall agent_eval.py app.py config.py analysis_jobs.py job_queue.py job_worker.py rate_limiter.py worker.py ops tests
 
       - name: Run unit tests
         env:
           APP_ENV: testing
         run: python -m unittest discover -s tests
+
+      - name: Run golden-case eval
+        run: python ops/run_agent_eval.py --cases evals/golden_cases.starter.json --output runtime/agent_eval_report.json --fail-on-failing-cases
+
+      - name: Upload agent eval report
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-eval-report
+          path: runtime/agent_eval_report.json
+          if-no-files-found: error
 
   docker-build:
     runs-on: ubuntu-latest

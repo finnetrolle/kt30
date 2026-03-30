@@ -27,6 +27,14 @@ def _safe_component(value: str, fallback: str = "file") -> str:
     return cleaned or fallback
 
 
+def _safe_filename(value: str, fallback_stem: str = "file") -> str:
+    """Sanitize a filename while preserving a safe extension."""
+    path = Path(str(value or "").replace("\\", "/").split("/")[-1])
+    safe_stem = _safe_component(path.stem, fallback=fallback_stem)
+    safe_suffix = re.sub(r"[^A-Za-z0-9.]+", "", path.suffix.lower())
+    return f"{safe_stem}{safe_suffix}" if safe_suffix else safe_stem
+
+
 class RunArtifacts:
     """Filesystem-backed artifact store for a single uploaded file run."""
 
@@ -88,7 +96,7 @@ class RunArtifacts:
     def copy_source_file(self, source_path: str, filename: Optional[str] = None) -> str:
         """Copy the uploaded source file into the run directory."""
         source_name = Path(filename or source_path).name
-        safe_name = _safe_component(source_name, fallback="source")
+        safe_name = _safe_filename(source_name, fallback_stem="upload")
         target = self._resolve_path(f"source/{safe_name}")
         with self._lock:
             shutil.copy2(source_path, target)

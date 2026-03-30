@@ -159,6 +159,7 @@ def process_analysis_job(
             "usage": result.get("usage", {}),
             "metadata": result.get("metadata", {}),
             "agent_conversation": result.get("agent_conversation", []),
+            "validation": result.get("validation"),
             "token_usage": token_usage,
             "artifacts_dir": tracker.artifacts_dir if tracker else None
         })
@@ -171,6 +172,7 @@ def process_analysis_job(
                 "usage": result.get("usage", {}),
                 "metadata": result.get("metadata", {}),
                 "agent_conversation": result.get("agent_conversation", []),
+                "validation": result.get("validation"),
                 "token_usage": token_usage,
                 "result_id": result_id,
                 "artifacts_dir": tracker.artifacts_dir

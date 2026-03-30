@@ -451,7 +451,8 @@ def analyze_specification(document_content: str, request_id: str = None,
                     "llm_profile": Config.LLM_PROFILE
                 },
                 "metadata": result["metadata"],
-                "agent_conversation": result.get("agent_conversation", [])
+                "agent_conversation": result.get("agent_conversation", []),
+                "validation": result.get("validation")
             }
         else:
             if progress_tracker:

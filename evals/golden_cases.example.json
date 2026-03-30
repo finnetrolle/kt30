@@ -1,0 +1,99 @@
+{
+  "cases": [
+    {
+      "case_id": "payments-api-demo",
+      "expected": {
+        "project_type": "API сервис",
+        "complexity_level": "Высокий",
+        "total_hours_range": [120, 560],
+        "required_requirement_ids": ["FR-1", "FR-2"],
+        "required_phase_names": ["Разработка", "Тестирование"],
+        "min_confidence_score": 0.7,
+        "min_total_score": 75
+      },
+      "result": {
+        "result": {
+          "project_info": {
+            "project_name": "Payments API",
+            "project_type": "API сервис",
+            "complexity_level": "Высокий",
+            "total_estimated_hours": 320
+          },
+          "wbs": {
+            "phases": [
+              {
+                "name": "Разработка",
+                "estimated_hours": 200,
+                "work_packages": [
+                  {
+                    "name": "API логика",
+                    "requirement_ids": ["FR-1", "FR-2"],
+                    "tasks": [
+                      {
+                        "name": "Реализовать аутентификацию",
+                        "requirement_ids": ["FR-1"]
+                      },
+                      {
+                        "name": "Добавить аудит операций",
+                        "requirement_ids": ["FR-2"]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "Тестирование",
+                "estimated_hours": 120,
+                "work_packages": [
+                  {
+                    "name": "Проверка API",
+                    "requirement_ids": ["FR-1", "FR-2"],
+                    "tasks": [
+                      {
+                        "name": "Проверить сценарии безопасности",
+                        "requirement_ids": ["FR-1"]
+                      },
+                      {
+                        "name": "Проверить аудит",
+                        "requirement_ids": ["FR-2"]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "metadata": {
+          "min_confidence_score": 0.7,
+          "requirements_coverage": {
+            "total": 2,
+            "covered": 2,
+            "covered_by_ids": 2,
+            "covered_by_name_fallback": 0,
+            "uncovered": [],
+            "coverage_matrix": [
+              {
+                "requirement_id": "FR-1",
+                "requirement_name": "Аутентификация",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              },
+              {
+                "requirement_id": "FR-2",
+                "requirement_name": "Аудит операций",
+                "covered": true,
+                "covered_by_ids": true,
+                "covered_by_name_fallback": false
+              }
+            ]
+          }
+        },
+        "validation": {
+          "confidence_score": 0.82
+        }
+      }
+    }
+  ]
+}

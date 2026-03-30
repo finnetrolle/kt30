@@ -3,27 +3,35 @@ GUNICORN ?= gunicorn
 APP_ENV ?= development
 PORT ?= 8000
 TEST_MODULES ?= \
+	tests.test_eval_dataset \
+	tests.test_eval_runner \
+	tests.test_golden_case_builder \
 	tests.test_progress_tracker \
 	tests.test_app_security \
 	tests.test_job_queue \
 	tests.test_rate_limiter \
-	tests.test_task_api
+	tests.test_task_api \
+	tests.test_wbs_traceability
+EVAL_CASES ?= evals/golden_cases.starter.json
 
 .PHONY: install compile test test-all run-web run-worker run-gunicorn \
 	health-web health-worker smoke docker-build compose-up compose-build \
-	compose-down compose-logs ci
+	compose-down compose-logs eval ci
 
 install:
 	$(PYTHON) -m pip install -r requirements.txt
 
 compile:
-	$(PYTHON) -m compileall app.py config.py analysis_jobs.py job_queue.py job_worker.py rate_limiter.py worker.py ops tests
+	$(PYTHON) -m compileall agent_eval.py app.py config.py analysis_jobs.py job_queue.py job_worker.py rate_limiter.py worker.py ops tests
 
 test:
 	APP_ENV=testing $(PYTHON) -m unittest $(TEST_MODULES)
 
 test-all:
 	APP_ENV=testing $(PYTHON) -m unittest discover -s tests
+
+eval:
+	$(PYTHON) ops/run_agent_eval.py --cases $(EVAL_CASES) --output runtime/agent_eval_report.json --fail-on-failing-cases
 
 run-web:
 	APP_ENV=$(APP_ENV) $(PYTHON) app.py
@@ -57,4 +65,4 @@ compose-down:
 compose-logs:
 	docker compose logs -f app worker
 
-ci: compile test-all docker-build
+ci: compile test-all eval docker-build
